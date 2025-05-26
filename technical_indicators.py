@@ -62,7 +62,7 @@ class TechnicalIndicators:
                 avg_gain.iloc[i] = new_avg_gain
                 avg_loss.iloc[i] = new_avg_loss
         
-        return rsi_wilder.fillna(method='ffill')
+        return rsi_wilder.ffill()
     
     def calculate_macd(self, prices, fast_period=12, slow_period=26, signal_period=9):
         """
