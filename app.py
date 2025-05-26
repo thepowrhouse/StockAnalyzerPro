@@ -286,43 +286,65 @@ def analyze_portfolio(portfolio_analyzer):
             portfolio_display_formatted['RSI'] = portfolio_display_formatted['RSI'].apply(lambda x: f"{x:.1f}")
             portfolio_display_formatted['MACD'] = portfolio_display_formatted['MACD'].apply(lambda x: f"{x:.3f}")
             
-            # Create styled dataframe
-            styled_df = portfolio_display_formatted[['Symbol', 'Quantity', 'Buy_Price', 'Current_Price', 
-                                                   'Invested_Amount', 'Current_Value', 'PnL', 'PnL_Percentage', 
-                                                   'CAGR', 'RSI', 'MACD', 'Recommendation', 'Reason']].style.apply(
-                lambda x: [style_recommendation(x['Recommendation'])] * len(x), axis=1
-            ).apply(
-                lambda x: [style_rsi(float(x['RSI'])) if x['RSI'] != 'N/A' else ''] * len(x), axis=1
-            ).apply(
-                lambda x: [style_pnl(x['PnL_Percentage'])] * len(x), axis=1
-            )
+            # Prepare the final table with proper column configuration
+            table_data = portfolio_display.copy()
             
-            # Display the enhanced portfolio table with sorting capability
-            st.markdown("**💡 Tip:** Click on column headers to sort the data")
+            # Format columns for display while keeping sortability
+            table_data['Buy_Price'] = table_data['Buy_Price'].round(2)
+            table_data['Current_Price'] = table_data['Current_Price'].round(2)
+            table_data['Invested_Amount'] = table_data['Invested_Amount'].round(0)
+            table_data['Current_Value'] = table_data['Current_Value'].round(0)
+            table_data['PnL'] = table_data['PnL'].round(0)
+            table_data['PnL_Percentage'] = table_data['PnL_Percentage'].round(1)
+            table_data['CAGR'] = table_data['CAGR'].round(1)
+            table_data['RSI'] = table_data['RSI'].round(1)
+            table_data['MACD'] = table_data['MACD'].round(3)
             
-            # Create a sortable dataframe display
-            sort_by = st.selectbox(
-                "Sort by:",
-                ['Symbol', 'PnL_Percentage', 'CAGR', 'Current_Value', 'RSI', 'MACD', 'Recommendation'],
-                index=1,  # Default to PnL_Percentage
-                key="sort_selector"
-            )
+            # Add sorting controls
+            col_sort1, col_sort2 = st.columns([3, 1])
             
-            ascending = st.checkbox("Ascending order", value=False, key="sort_order")
+            with col_sort1:
+                sort_by = st.selectbox(
+                    "📊 Sort by:",
+                    ['PnL_Percentage', 'CAGR', 'Current_Value', 'RSI', 'MACD', 'Symbol', 'Recommendation'],
+                    index=0,
+                    key="sort_selector"
+                )
+            
+            with col_sort2:
+                ascending = st.checkbox("⬆️ Ascending", value=False, key="sort_order")
             
             # Sort the dataframe
-            portfolio_sorted = portfolio_display_formatted.sort_values(
-                by=sort_by.replace('_', ' ') if sort_by in ['PnL_Percentage'] else sort_by,
-                ascending=ascending
-            )
+            table_sorted = table_data.sort_values(by=sort_by, ascending=ascending)
             
-            # Display the table
-            st.dataframe(
-                portfolio_sorted[['Symbol', 'Quantity', 'Buy_Price', 'Current_Price', 
-                               'Invested_Amount', 'Current_Value', 'PnL', 'PnL_Percentage', 
-                               'CAGR', 'RSI', 'MACD', 'Recommendation', 'Reason']],
+            # Configure column display with enhanced styling
+            column_config = {
+                "Symbol": st.column_config.TextColumn("🏢 Symbol", width="small"),
+                "Quantity": st.column_config.NumberColumn("📦 Qty", width="small"),
+                "Buy_Price": st.column_config.NumberColumn("💰 Buy Price", format="₹%.2f", width="small"),
+                "Current_Price": st.column_config.NumberColumn("💎 Current Price", format="₹%.2f", width="small"),
+                "Invested_Amount": st.column_config.NumberColumn("💵 Invested", format="₹%,.0f", width="medium"),
+                "Current_Value": st.column_config.NumberColumn("💰 Current Value", format="₹%,.0f", width="medium"),
+                "PnL": st.column_config.NumberColumn("📈 P&L", format="₹%,.0f", width="small"),
+                "PnL_Percentage": st.column_config.NumberColumn("📊 P&L %", format="%.1f%%", width="small"),
+                "CAGR": st.column_config.NumberColumn("⚡ CAGR", format="%.1f%%", width="small"),
+                "RSI": st.column_config.NumberColumn("🎯 RSI", format="%.1f", width="small"),
+                "MACD": st.column_config.NumberColumn("📉 MACD", format="%.3f", width="small"),
+                "Recommendation": st.column_config.TextColumn("🤖 Signal", width="small"),
+                "Reason": st.column_config.TextColumn("💡 Analysis", width="large")
+            }
+            
+            # Display the enhanced table with built-in sorting
+            st.markdown("**💡 Click on any column header to sort the data**")
+            st.data_editor(
+                table_sorted[['Symbol', 'Quantity', 'Buy_Price', 'Current_Price', 
+                            'Invested_Amount', 'Current_Value', 'PnL', 'PnL_Percentage', 
+                            'CAGR', 'RSI', 'MACD', 'Recommendation', 'Reason']],
+                column_config=column_config,
                 use_container_width=True,
-                height=400
+                height=400,
+                disabled=True,  # Make it read-only
+                hide_index=True
             )
             
             # Enhanced recommendation summary
