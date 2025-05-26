@@ -12,10 +12,10 @@ from portfolio_analyzer import PortfolioAnalyzer
 
 # Configure page
 st.set_page_config(
-    page_title="Indian Stock Market Analyzer",
-    page_icon="📈",
+    page_title="Portfolio Manager",
+    page_icon="💼",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="collapsed"
 )
 
 # Initialize session state
@@ -27,8 +27,62 @@ if 'current_symbol' not in st.session_state:
     st.session_state.current_symbol = None
 
 def main():
-    st.title("💼 Portfolio Manager & Stock Analyzer")
-    st.markdown("Upload your portfolio CSV to get live prices, CAGR, XIRR, and buy/sell recommendations")
+    # Add custom CSS for better styling
+    st.markdown("""
+    <style>
+    .main-header {
+        background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+        padding: 2rem;
+        border-radius: 10px;
+        margin-bottom: 2rem;
+        text-align: center;
+        color: white;
+    }
+    .metric-card {
+        background: white;
+        padding: 1rem;
+        border-radius: 10px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        border-left: 4px solid #667eea;
+    }
+    .recommendation-buy {
+        background: linear-gradient(135deg, #81C784 0%, #4CAF50 100%);
+        color: white;
+        padding: 1rem;
+        border-radius: 10px;
+        margin: 0.5rem 0;
+    }
+    .recommendation-sell {
+        background: linear-gradient(135deg, #E57373 0%, #F44336 100%);
+        color: white;
+        padding: 1rem;
+        border-radius: 10px;
+        margin: 0.5rem 0;
+    }
+    .recommendation-hold {
+        background: linear-gradient(135deg, #FFB74D 0%, #FF9800 100%);
+        color: white;
+        padding: 1rem;
+        border-radius: 10px;
+        margin: 0.5rem 0;
+    }
+    .upload-section {
+        background: #f8f9fa;
+        padding: 2rem;
+        border-radius: 10px;
+        border: 2px dashed #667eea;
+        margin: 2rem 0;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    
+    # Main header with gradient background
+    st.markdown("""
+    <div class="main-header">
+        <h1>💼 Smart Portfolio Manager</h1>
+        <p style="font-size: 1.2rem; margin: 0;">Upload your holdings and get intelligent buy/sell recommendations with live market data</p>
+    </div>
+    """, unsafe_allow_html=True)
     
     # Initialize portfolio analyzer
     portfolio_analyzer = PortfolioAnalyzer()
@@ -40,28 +94,45 @@ def main():
 
 def analyze_portfolio(portfolio_analyzer):
     """Portfolio analysis functionality"""
-    st.header("💼 Portfolio Analysis & Recommendations")
-    st.markdown("Upload your portfolio CSV to get live prices, CAGR, XIRR, and buy/sell recommendations")
     
-    # File upload section
-    st.subheader("📁 Upload Portfolio Data")
-    uploaded_file = st.file_uploader(
-        "Choose your portfolio CSV file",
-        type=['csv'],
-        help="CSV should contain columns: Symbol, Quantity, Buy_Price, Buy_Date"
-    )
+    # File upload section with enhanced styling
+    st.markdown('<div class="upload-section">', unsafe_allow_html=True)
     
-    # Display expected format
-    with st.expander("📋 Expected CSV Format"):
-        st.markdown("Your CSV file should have these columns:")
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        st.markdown("### 📁 Upload Your Portfolio")
+        st.markdown("Select your CSV file containing your stock holdings to get started with the analysis.")
+        
+        uploaded_file = st.file_uploader(
+            "Choose your portfolio CSV file",
+            type=['csv'],
+            help="CSV should contain columns: Symbol, Quantity, Buy_Price, Buy_Date",
+            label_visibility="collapsed"
+        )
+    
+    with col2:
+        st.markdown("### 📋 Required Format")
+        st.markdown("""
+        **Columns needed:**
+        - **Symbol**: NSE stock symbol (e.g., RELIANCE)
+        - **Quantity**: Number of shares
+        - **Buy_Price**: Purchase price per share
+        - **Buy_Date**: Date of purchase (YYYY-MM-DD)
+        """)
+    
+    st.markdown('</div>', unsafe_allow_html=True)
+    
+    # Display expected format in an expandable section
+    with st.expander("💡 See Sample CSV Format", expanded=False):
         sample_data = {
-            'Symbol': ['RELIANCE', 'TCS', 'INFY'],
-            'Quantity': [10, 25, 50],
-            'Buy_Price': [2150.00, 3200.00, 1450.00],
-            'Buy_Date': ['2023-01-15', '2023-03-20', '2023-06-10']
+            'Symbol': ['RELIANCE', 'TCS', 'INFY', 'HDFCBANK'],
+            'Quantity': [10, 25, 50, 15],
+            'Buy_Price': [2150.00, 3200.00, 1450.00, 1650.00],
+            'Buy_Date': ['2023-01-15', '2023-03-20', '2023-06-10', '2023-08-05']
         }
-        st.dataframe(pd.DataFrame(sample_data))
-        st.markdown("**Note:** Symbol should be NSE symbols (without .NS suffix)")
+        st.dataframe(pd.DataFrame(sample_data), use_container_width=True)
+        st.info("💡 Tip: Save your data in this exact format as a CSV file for best results.")
     
     if uploaded_file is not None:
         try:
@@ -94,34 +165,46 @@ def analyze_portfolio(portfolio_analyzer):
                 # Generate portfolio summary
                 summary = portfolio_analyzer.generate_portfolio_summary(portfolio_df)
             
-            # Display portfolio summary
-            st.subheader("📈 Portfolio Summary")
+            # Display portfolio summary with enhanced styling
+            st.markdown("---")
+            st.markdown("### 📈 Portfolio Performance Overview")
+            
             col1, col2, col3, col4 = st.columns(4)
             
             with col1:
+                delta_color = "normal"
                 st.metric(
-                    "Total Invested", 
-                    f"₹{summary['total_invested']:,.2f}"
+                    "💰 Total Invested", 
+                    f"₹{summary['total_invested']:,.0f}",
+                    help="Total amount invested across all holdings"
                 )
             
             with col2:
+                pnl_delta = f"₹{summary['total_pnl']:,.0f}"
+                delta_color = "normal" if summary['total_pnl'] >= 0 else "inverse"
                 st.metric(
-                    "Current Value", 
-                    f"₹{summary['total_current_value']:,.2f}",
-                    f"₹{summary['total_pnl']:,.2f}"
+                    "💎 Current Value", 
+                    f"₹{summary['total_current_value']:,.0f}",
+                    delta=pnl_delta,
+                    help="Current market value of your portfolio"
                 )
             
             with col3:
-                pnl_color = "normal" if summary['overall_pnl_percentage'] >= 0 else "inverse"
+                pnl_delta = f"{summary['overall_pnl_percentage']:.1f}%"
+                delta_color = "normal" if summary['overall_pnl_percentage'] >= 0 else "inverse"
                 st.metric(
-                    "Overall P&L", 
-                    f"{summary['overall_pnl_percentage']:.2f}%"
+                    "📊 Overall Return", 
+                    pnl_delta,
+                    help="Total profit/loss percentage"
                 )
             
             with col4:
+                xirr_delta = f"{summary['portfolio_xirr']:.1f}%"
+                delta_color = "normal" if summary['portfolio_xirr'] >= 0 else "inverse"
                 st.metric(
-                    "Portfolio XIRR", 
-                    f"{summary['portfolio_xirr']:.2f}%"
+                    "⚡ XIRR", 
+                    xirr_delta,
+                    help="Extended Internal Rate of Return (annualized)"
                 )
             
             # Detailed holdings with recommendations
@@ -160,8 +243,9 @@ def analyze_portfolio(portfolio_analyzer):
                 use_container_width=True
             )
             
-            # Recommendation summary
-            st.subheader("🎯 Recommendation Summary")
+            # Enhanced recommendation summary
+            st.markdown("---")
+            st.markdown("### 🎯 AI-Powered Investment Recommendations")
             
             buy_stocks = [symbol for symbol, rec in recommendations.items() if rec['action'] == 'BUY']
             sell_stocks = [symbol for symbol, rec in recommendations.items() if rec['action'] == 'SELL']
@@ -170,38 +254,117 @@ def analyze_portfolio(portfolio_analyzer):
             col1, col2, col3 = st.columns(3)
             
             with col1:
-                st.success(f"🟢 **BUY Recommendations ({len(buy_stocks)})**")
+                st.markdown(f"""
+                <div class="recommendation-buy">
+                    <h4>🟢 BUY Signals ({len(buy_stocks)})</h4>
+                    <p>Stocks showing bullish momentum</p>
+                </div>
+                """, unsafe_allow_html=True)
+                
                 if buy_stocks:
                     for stock in buy_stocks:
-                        st.write(f"• {stock}")
+                        reason = recommendations[stock]['reason']
+                        st.success(f"**{stock}** - {reason}")
                 else:
-                    st.write("No buy recommendations")
+                    st.info("No buy recommendations at this time")
             
             with col2:
-                st.warning(f"🔴 **SELL Recommendations ({len(sell_stocks)})**")
+                st.markdown(f"""
+                <div class="recommendation-sell">
+                    <h4>🔴 SELL Signals ({len(sell_stocks)})</h4>
+                    <p>Stocks showing bearish momentum</p>
+                </div>
+                """, unsafe_allow_html=True)
+                
                 if sell_stocks:
                     for stock in sell_stocks:
-                        st.write(f"• {stock}")
+                        reason = recommendations[stock]['reason']
+                        st.error(f"**{stock}** - {reason}")
                 else:
-                    st.write("No sell recommendations")
+                    st.info("No sell recommendations at this time")
             
             with col3:
-                st.info(f"🟡 **HOLD Recommendations ({len(hold_stocks)})**")
+                st.markdown(f"""
+                <div class="recommendation-hold">
+                    <h4>🟡 HOLD Signals ({len(hold_stocks)})</h4>
+                    <p>Stocks in neutral territory</p>
+                </div>
+                """, unsafe_allow_html=True)
+                
                 if hold_stocks:
                     for stock in hold_stocks:
-                        st.write(f"• {stock}")
+                        reason = recommendations[stock]['reason']
+                        st.warning(f"**{stock}** - {reason}")
                 else:
-                    st.write("No hold recommendations")
+                    st.info("No hold recommendations at this time")
             
-            # Portfolio allocation chart
-            st.subheader("📊 Portfolio Allocation")
-            fig = go.Figure(data=[go.Pie(
-                labels=portfolio_df['Symbol'],
-                values=portfolio_df['Current_Value'],
-                hole=0.3
-            )])
-            fig.update_layout(title="Portfolio Allocation by Current Value")
-            st.plotly_chart(fig, use_container_width=True)
+            # Enhanced portfolio allocation chart
+            st.markdown("---")
+            st.markdown("### 📊 Portfolio Allocation Breakdown")
+            
+            col1, col2 = st.columns([2, 1])
+            
+            with col1:
+                # Create a more visually appealing pie chart
+                colors = ['#667eea', '#764ba2', '#f093fb', '#f5576c', '#4facfe', '#00f2fe', '#43e97b', '#38f9d7']
+                
+                fig = go.Figure(data=[go.Pie(
+                    labels=portfolio_df['Symbol'],
+                    values=portfolio_df['Current_Value'],
+                    hole=0.4,
+                    marker=dict(colors=colors, line=dict(color='#FFFFFF', width=2)),
+                    textinfo='label+percent',
+                    textfont_size=12,
+                    pull=[0.05 if i == 0 else 0 for i in range(len(portfolio_df))]  # Pull out the largest slice
+                )])
+                
+                fig.update_layout(
+                    title={
+                        'text': "Current Portfolio Distribution",
+                        'y': 0.95,
+                        'x': 0.5,
+                        'xanchor': 'center',
+                        'yanchor': 'top',
+                        'font': {'size': 16, 'color': '#333'}
+                    },
+                    font=dict(size=12),
+                    showlegend=True,
+                    legend=dict(
+                        orientation="v",
+                        yanchor="middle",
+                        y=0.5,
+                        xanchor="left",
+                        x=1.01
+                    ),
+                    margin=dict(t=50, b=0, l=0, r=0),
+                    height=400
+                )
+                
+                st.plotly_chart(fig, use_container_width=True)
+            
+            with col2:
+                st.markdown("#### 📈 Top Performers")
+                
+                # Sort by P&L percentage and show top performers
+                top_performers = portfolio_df.nlargest(3, 'PnL_Percentage')[['Symbol', 'PnL_Percentage']]
+                
+                for idx, row in top_performers.iterrows():
+                    pnl = row['PnL_Percentage']
+                    symbol = row['Symbol']
+                    
+                    if pnl >= 0:
+                        st.success(f"🚀 **{symbol}**: +{pnl:.1f}%")
+                    else:
+                        st.error(f"📉 **{symbol}**: {pnl:.1f}%")
+                
+                st.markdown("#### 💡 Quick Stats")
+                profitable_stocks = len(portfolio_df[portfolio_df['PnL_Percentage'] > 0])
+                total_stocks = len(portfolio_df)
+                
+                st.info(f"📊 {profitable_stocks}/{total_stocks} stocks in profit")
+                
+                avg_cagr = portfolio_df['CAGR'].mean()
+                st.info(f"📈 Average CAGR: {avg_cagr:.1f}%")
             
         except Exception as e:
             st.error(f"❌ Error processing portfolio: {str(e)}")

@@ -49,7 +49,7 @@ class PortfolioAnalyzer:
         try:
             df['Quantity'] = pd.to_numeric(df['Quantity'])
             df['Buy_Price'] = pd.to_numeric(df['Buy_Price'])
-            df['Buy_Date'] = pd.to_datetime(df['Buy_Date'])
+            df['Buy_Date'] = pd.to_datetime(df['Buy_Date'], format='%Y-%m-%d', errors='coerce')
         except Exception as e:
             return False, f"Data type conversion error: {str(e)}"
         
