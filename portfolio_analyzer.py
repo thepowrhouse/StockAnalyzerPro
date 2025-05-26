@@ -128,34 +128,72 @@ class PortfolioAnalyzer:
         dates: list of corresponding dates
         """
         try:
-            # Simple approximation of XIRR using numpy
-            # For more accurate XIRR, you might want to use scipy.optimize
-            
             if len(cash_flows) != len(dates) or len(cash_flows) < 2:
                 return 0
             
-            # Convert dates to days from first date
-            first_date = min(dates)
-            days = [(date - first_date).days for date in dates]
+            # Remove any zero cash flows and corresponding dates
+            filtered_cash_flows = []
+            filtered_dates = []
+            for cf, date in zip(cash_flows, dates):
+                if cf != 0:
+                    filtered_cash_flows.append(cf)
+                    filtered_dates.append(date)
             
-            # Use numpy's IRR approximation
-            # This is a simplified version - for production, consider using scipy
-            def npv(rate, cash_flows, days):
-                return sum(cf / (1 + rate) ** (day / 365.25) for cf, day in zip(cash_flows, days))
+            if len(filtered_cash_flows) < 2:
+                return 0
             
-            # Binary search for IRR
-            low, high = -0.99, 10.0
-            mid = 0.0
-            for _ in range(100):  # Max iterations
-                mid = (low + high) / 2
-                if abs(npv(mid, cash_flows, days)) < 1e-6:
+            # Convert dates to years from first date
+            first_date = min(filtered_dates)
+            years = [(date - first_date).days / 365.25 for date in filtered_dates]
+            
+            def npv(rate, cash_flows, years):
+                """Calculate Net Present Value"""
+                if rate <= -1:
+                    return float('inf')
+                return sum(cf / ((1 + rate) ** year) for cf, year in zip(cash_flows, years))
+            
+            def npv_derivative(rate, cash_flows, years):
+                """Calculate derivative of NPV for Newton-Raphson method"""
+                if rate <= -1:
+                    return float('inf')
+                return sum(-cf * year / ((1 + rate) ** (year + 1)) for cf, year in zip(cash_flows, years))
+            
+            # Use Newton-Raphson method for better accuracy
+            guess = 0.1  # 10% initial guess
+            
+            for _ in range(100):  # Maximum iterations
+                npv_val = npv(guess, filtered_cash_flows, years)
+                npv_deriv = npv_derivative(guess, filtered_cash_flows, years)
+                
+                if abs(npv_val) < 1e-6:  # Convergence achieved
+                    return guess * 100
+                
+                if npv_deriv == 0:  # Avoid division by zero
+                    break
+                
+                new_guess = guess - npv_val / npv_deriv
+                
+                # Ensure the guess stays within reasonable bounds
+                if new_guess <= -1 or new_guess > 5:  # Cap at 500% return
+                    # Fall back to bisection method
+                    low, high = -0.99, 5.0
+                    for _ in range(50):
+                        mid = (low + high) / 2
+                        npv_mid = npv(mid, filtered_cash_flows, years)
+                        if abs(npv_mid) < 1e-6:
+                            return mid * 100
+                        elif npv_mid > 0:
+                            low = mid
+                        else:
+                            high = mid
                     return mid * 100
-                elif npv(mid, cash_flows, days) > 0:
-                    low = mid
-                else:
-                    high = mid
+                
+                if abs(new_guess - guess) < 1e-6:  # Convergence achieved
+                    return new_guess * 100
+                
+                guess = new_guess
             
-            return mid * 100
+            return guess * 100
         
         except Exception:
             return 0

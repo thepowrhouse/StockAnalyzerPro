@@ -150,10 +150,6 @@ def analyze_portfolio(portfolio_analyzer):
             # Use validated dataframe
             df = result
             
-            # Display uploaded data
-            st.subheader("📊 Your Portfolio Holdings")
-            st.dataframe(df)
-            
             # Fetch current prices
             with st.spinner("🔄 Fetching live prices and calculating metrics..."):
                 symbols = df['Symbol'].unique().tolist()
@@ -208,16 +204,38 @@ def analyze_portfolio(portfolio_analyzer):
                 )
             
             # Detailed holdings with recommendations
-            st.subheader("📋 Detailed Holdings & Recommendations")
+            st.markdown("---")
+            st.markdown("### 📋 Detailed Holdings & Investment Analysis")
             
-            # Get recommendations for each stock
+            # Get recommendations and technical indicators for each stock
             recommendations = {}
-            with st.spinner("🤖 Analyzing technical indicators for recommendations..."):
+            technical_data = {}
+            
+            with st.spinner("🤖 Analyzing technical indicators and generating recommendations..."):
                 for symbol in symbols:
                     recommendation, reason = portfolio_analyzer.get_technical_recommendations(symbol)
                     recommendations[symbol] = {'action': recommendation, 'reason': reason}
+                    
+                    # Get current RSI and MACD values
+                    try:
+                        stock_data = portfolio_analyzer.data_fetcher.get_stock_data(symbol, "NSE", "3mo")
+                        if stock_data is not None and not stock_data.empty:
+                            rsi = portfolio_analyzer.tech_indicators.calculate_rsi(stock_data['Close'])
+                            macd_data = portfolio_analyzer.tech_indicators.calculate_macd(stock_data['Close'])
+                            
+                            current_rsi = rsi.iloc[-1] if not rsi.empty else 0
+                            current_macd = macd_data['MACD'].iloc[-1] if not macd_data['MACD'].empty else 0
+                            
+                            technical_data[symbol] = {
+                                'RSI': current_rsi,
+                                'MACD': current_macd
+                            }
+                        else:
+                            technical_data[symbol] = {'RSI': 0, 'MACD': 0}
+                    except:
+                        technical_data[symbol] = {'RSI': 0, 'MACD': 0}
             
-            # Create enhanced portfolio dataframe with recommendations
+            # Create enhanced portfolio dataframe with recommendations and technical indicators
             portfolio_display = portfolio_df.copy()
             portfolio_display['Recommendation'] = portfolio_display['Symbol'].map(
                 lambda x: recommendations.get(x, {}).get('action', 'N/A')
@@ -225,22 +243,86 @@ def analyze_portfolio(portfolio_analyzer):
             portfolio_display['Reason'] = portfolio_display['Symbol'].map(
                 lambda x: recommendations.get(x, {}).get('reason', 'N/A')
             )
+            portfolio_display['RSI'] = portfolio_display['Symbol'].map(
+                lambda x: technical_data.get(x, {}).get('RSI', 0)
+            )
+            portfolio_display['MACD'] = portfolio_display['Symbol'].map(
+                lambda x: technical_data.get(x, {}).get('MACD', 0)
+            )
             
-            # Format display columns
-            portfolio_display['Buy_Price'] = portfolio_display['Buy_Price'].apply(lambda x: f"₹{x:.2f}")
-            portfolio_display['Current_Price'] = portfolio_display['Current_Price'].apply(lambda x: f"₹{x:.2f}")
-            portfolio_display['Invested_Amount'] = portfolio_display['Invested_Amount'].apply(lambda x: f"₹{x:,.2f}")
-            portfolio_display['Current_Value'] = portfolio_display['Current_Value'].apply(lambda x: f"₹{x:,.2f}")
-            portfolio_display['PnL'] = portfolio_display['PnL'].apply(lambda x: f"₹{x:,.2f}")
-            portfolio_display['PnL_Percentage'] = portfolio_display['PnL_Percentage'].apply(lambda x: f"{x:.2f}%")
-            portfolio_display['CAGR'] = portfolio_display['CAGR'].apply(lambda x: f"{x:.2f}%")
+            # Add styling function for recommendations
+            def style_recommendation(val):
+                if val == 'BUY':
+                    return 'background-color: #d4edda; color: #155724; font-weight: bold'
+                elif val == 'SELL':
+                    return 'background-color: #f8d7da; color: #721c24; font-weight: bold'
+                elif val == 'HOLD':
+                    return 'background-color: #fff3cd; color: #856404; font-weight: bold'
+                return ''
             
-            # Display the enhanced portfolio table
+            def style_rsi(val):
+                if val > 70:
+                    return 'background-color: #f8d7da; color: #721c24'  # Overbought - red
+                elif val < 30:
+                    return 'background-color: #d4edda; color: #155724'  # Oversold - green
+                return ''
+            
+            def style_pnl(val):
+                if '+' in str(val) or (isinstance(val, (int, float)) and val > 0):
+                    return 'color: #28a745; font-weight: bold'
+                elif '-' in str(val) or (isinstance(val, (int, float)) and val < 0):
+                    return 'color: #dc3545; font-weight: bold'
+                return ''
+            
+            # Format display columns for better readability
+            portfolio_display_formatted = portfolio_display.copy()
+            portfolio_display_formatted['Buy_Price'] = portfolio_display_formatted['Buy_Price'].apply(lambda x: f"₹{x:.2f}")
+            portfolio_display_formatted['Current_Price'] = portfolio_display_formatted['Current_Price'].apply(lambda x: f"₹{x:.2f}")
+            portfolio_display_formatted['Invested_Amount'] = portfolio_display_formatted['Invested_Amount'].apply(lambda x: f"₹{x:,.0f}")
+            portfolio_display_formatted['Current_Value'] = portfolio_display_formatted['Current_Value'].apply(lambda x: f"₹{x:,.0f}")
+            portfolio_display_formatted['PnL'] = portfolio_display_formatted['PnL'].apply(lambda x: f"₹{x:,.0f}")
+            portfolio_display_formatted['PnL_Percentage'] = portfolio_display_formatted['PnL_Percentage'].apply(lambda x: f"{x:.1f}%")
+            portfolio_display_formatted['CAGR'] = portfolio_display_formatted['CAGR'].apply(lambda x: f"{x:.1f}%")
+            portfolio_display_formatted['RSI'] = portfolio_display_formatted['RSI'].apply(lambda x: f"{x:.1f}")
+            portfolio_display_formatted['MACD'] = portfolio_display_formatted['MACD'].apply(lambda x: f"{x:.3f}")
+            
+            # Create styled dataframe
+            styled_df = portfolio_display_formatted[['Symbol', 'Quantity', 'Buy_Price', 'Current_Price', 
+                                                   'Invested_Amount', 'Current_Value', 'PnL', 'PnL_Percentage', 
+                                                   'CAGR', 'RSI', 'MACD', 'Recommendation', 'Reason']].style.apply(
+                lambda x: [style_recommendation(x['Recommendation'])] * len(x), axis=1
+            ).apply(
+                lambda x: [style_rsi(float(x['RSI'])) if x['RSI'] != 'N/A' else ''] * len(x), axis=1
+            ).apply(
+                lambda x: [style_pnl(x['PnL_Percentage'])] * len(x), axis=1
+            )
+            
+            # Display the enhanced portfolio table with sorting capability
+            st.markdown("**💡 Tip:** Click on column headers to sort the data")
+            
+            # Create a sortable dataframe display
+            sort_by = st.selectbox(
+                "Sort by:",
+                ['Symbol', 'PnL_Percentage', 'CAGR', 'Current_Value', 'RSI', 'MACD', 'Recommendation'],
+                index=1,  # Default to PnL_Percentage
+                key="sort_selector"
+            )
+            
+            ascending = st.checkbox("Ascending order", value=False, key="sort_order")
+            
+            # Sort the dataframe
+            portfolio_sorted = portfolio_display_formatted.sort_values(
+                by=sort_by.replace('_', ' ') if sort_by in ['PnL_Percentage'] else sort_by,
+                ascending=ascending
+            )
+            
+            # Display the table
             st.dataframe(
-                portfolio_display[['Symbol', 'Quantity', 'Buy_Price', 'Current_Price', 
-                                'Invested_Amount', 'Current_Value', 'PnL', 'PnL_Percentage', 
-                                'CAGR', 'Recommendation', 'Reason']],
-                use_container_width=True
+                portfolio_sorted[['Symbol', 'Quantity', 'Buy_Price', 'Current_Price', 
+                               'Invested_Amount', 'Current_Value', 'PnL', 'PnL_Percentage', 
+                               'CAGR', 'RSI', 'MACD', 'Recommendation', 'Reason']],
+                use_container_width=True,
+                height=400
             )
             
             # Enhanced recommendation summary
