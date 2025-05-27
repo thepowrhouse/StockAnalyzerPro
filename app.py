@@ -17,6 +17,10 @@ def install_package(package):
 
 try:
     from sklearn.ensemble import HistGradientBoostingClassifier
+    from sklearn.impute import SimpleImputer
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.pipeline import Pipeline
+    from sklearn.preprocessing import StandardScaler
 except ImportError:
     install_package('scikit-learn')
     from sklearn.ensemble import HistGradientBoostingClassifier
