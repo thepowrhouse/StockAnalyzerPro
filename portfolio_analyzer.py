@@ -11,7 +11,58 @@ class PortfolioAnalyzer:
     def __init__(self):
         self.data_fetcher = StockDataFetcher()
         self.tech_indicators = TechnicalIndicators()
-    
+
+    def validate_symbol(self, symbol):
+        """
+        Validate and format stock symbol
+        """
+        try:
+            # Remove any whitespace and convert to uppercase
+            symbol = symbol.strip().upper()
+
+            # Check common exchanges
+            exchanges = {
+                'NSE': '.NS',
+                'BSE': '.BO',
+                'NYSE': '',
+                'NASDAQ': ''
+            }
+
+            # If no exchange suffix is present, try to determine the correct one
+            if '.' not in symbol:
+                # Try yfinance symbol lookup
+                import yfinance as yf
+                try:
+                    stock = yf.Ticker(f"{symbol}.NS")
+                    info = stock.info
+                    if 'regularMarketPrice' in info and info['regularMarketPrice'] is not None:
+                        return f"{symbol}.NS"
+                except:
+                    pass
+
+                try:
+                    stock = yf.Ticker(f"{symbol}.BO")
+                    info = stock.info
+                    if 'regularMarketPrice' in info and info['regularMarketPrice'] is not None:
+                        return f"{symbol}.BO"
+                except:
+                    pass
+
+                # If still no match, try without suffix
+                try:
+                    stock = yf.Ticker(symbol)
+                    info = stock.info
+                    if 'regularMarketPrice' in info and info['regularMarketPrice'] is not None:
+                        return symbol
+                except:
+                    pass
+
+            return symbol
+
+        except Exception as e:
+            print(f"Error validating symbol {symbol}: {str(e)}")
+            return None
+
     def validate_csv_format(self, df):
         """
         Validate the uploaded CSV format
@@ -61,17 +112,24 @@ class PortfolioAnalyzer:
         
         for symbol in symbols:
             try:
-                stock_info = self.data_fetcher.get_stock_info(symbol, "NSE")
-                current_price = stock_info.get('currentPrice', 0)
+                valid_symbol = self.validate_symbol(symbol)
+                if valid_symbol:
+                    print(f"Using validated symbol: {valid_symbol}")
+
+                    stock_info = self.data_fetcher.get_stock_info(symbol, "NSE")
+                    current_price = stock_info.get('currentPrice', 0)
                 
-                # If current price not available, try getting from recent data
-                if current_price == 0:
-                    recent_data = self.data_fetcher.get_stock_data(symbol, "NSE", "1d")
-                    if recent_data is not None and not recent_data.empty:
-                        current_price = recent_data['Close'].iloc[-1]
-                
-                current_prices[symbol] = current_price
-                
+                    # If current price not available, try getting from recent data
+                    if current_price == 0:
+                        recent_data = self.data_fetcher.get_stock_data(symbol, "NSE", "1d")
+                        if recent_data is not None and not recent_data.empty:
+                            current_price = recent_data['Close'].iloc[-1]
+
+                    current_prices[symbol] = current_price
+
+                else:
+                    print("Invalid symbol")
+
             except Exception as e:
                 st.warning(f"Could not fetch price for {symbol}: {str(e)}")
                 current_prices[symbol] = 0

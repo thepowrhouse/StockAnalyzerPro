@@ -28,7 +28,7 @@ class StockDataFetcher:
         else:
             return f"{symbol}{self.nse_suffix}"  # Default to NSE
     
-    def get_stock_data(self, symbol, exchange="NSE", period="1y"):
+    def get_stock_data(self, symbol, exchange, period):
         """
         Fetch historical stock data from yfinance
         

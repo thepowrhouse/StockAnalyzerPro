@@ -86,7 +86,7 @@ class AIPortfolioAnalyzer:
             st.warning(f"Error initializing models for {symbol}: {str(e)}")
             return False
 
-    def _calculate_rsi(self, prices, timeframe="1y"):
+    def _calculate_rsi(self, prices, timeframe):
         """
         Calculate RSI with different periods based on timeframe
         """
@@ -134,7 +134,7 @@ class AIPortfolioAnalyzer:
             print(f"Error in RSI calculation ({timeframe}): {str(e)}")
             return 50.0, []
 
-    def _calculate_macd(self, prices, timeframe="1y"):
+    def _calculate_macd(self, prices, timeframe):
         """
         Calculate MACD with different periods based on timeframe
         """
@@ -463,6 +463,36 @@ class AIPortfolioAnalyzer:
         true_range = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
         return true_range.rolling(period).mean()
 
+    def _calculate_support_resistance(self, data, lookback=20):
+        """Calculate the next support and resistance levels based on recent highs and lows"""
+        try:
+            if data.empty or len(data) < lookback:
+                return 0.0, 0.0
+
+            recent_data = data.tail(lookback)
+            current_price = data['Close'].iloc[-1]
+
+            # Calculate support (lowest low) and resistance (highest high)
+            support_level = recent_data['Low'].min()
+            resistance_level = recent_data['High'].max()
+
+            # Validate levels are within 20% of current price to ensure relevance
+            if not pd.isna(support_level) and support_level > current_price * 0.8:
+                support_level = np.float64(support_level)
+            else:
+                support_level = np.float64(current_price)
+
+            if not pd.isna(resistance_level) and resistance_level < current_price * 1.2:
+                resistance_level = np.float64(resistance_level)
+            else:
+                resistance_level = np.float64(current_price)
+
+            return support_level, resistance_level
+
+        except Exception as e:
+            print(f"Error calculating support/resistance: {str(e)}")
+            return np.float64(0.0), np.float64(0.0)
+
 
 def main():
     st.markdown("""
@@ -611,23 +641,160 @@ def analyze_portfolio(portfolio_analyzer):
             recommendations = {}
             technical_data = {}
             ai_analyzer = AIPortfolioAnalyzer()
+            # Initialize model_trained to False before the loop
+            model_trained = False
             with st.spinner("🤖 Training AI models and analyzing technical indicators..."):
                 all_training_features = []
                 all_training_labels = []
                 valid_symbols = []
+
                 for symbol in symbols:
-                    stock_data = portfolio_analyzer.data_fetcher.get_stock_data(symbol, "NSE", "5y")
-                    stock_data_1y = portfolio_analyzer.data_fetcher.get_stock_data(symbol, "NSE", "1y")
-                    if stock_data is not None and not stock_data.empty and len(stock_data) > 50:
-                        try:
+                    # Fetch Stock info for processing
+                    try:
+                        stock_data = portfolio_analyzer.data_fetcher.get_stock_data(symbol, "NSE", "5y")
+                        stock_data_1y = portfolio_analyzer.data_fetcher.get_stock_data(symbol, "NSE", "1y")
+                        if stock_data is not None and not stock_data.empty:
+                            try:
+                                rsi_5y = portfolio_analyzer.tech_indicators.calculate_rsi(stock_data['Close'])
+                                macd_data_5y = portfolio_analyzer.tech_indicators.calculate_macd(stock_data['Close'])
+                                rsi_1y = portfolio_analyzer.tech_indicators.calculate_rsi(stock_data_1y['Close'])
+                                macd_data_1y = portfolio_analyzer.tech_indicators.calculate_macd(stock_data_1y['Close'])
+                                sma_44 = stock_data['Close'].rolling(44).mean()
+                                info = portfolio_analyzer.data_fetcher.get_stock_info(symbol, "NSE")
+                                support_level, resistance_level = ai_analyzer._calculate_support_resistance(stock_data)
+                            except Exception as e:
+                                st.warning(f"Error in fetching Stock INFO {symbol}: {str(e)}")
+                                support_level, resistance_level = 0.0, 0.0
+
+                            if model_trained:
+                                features = ai_analyzer.calculate_advanced_features(stock_data)
+                                if features:
+                                    ai_recommendation, ai_reason, confidence = ai_analyzer.get_ai_recommendation(features)
+                                    recommendations[symbol] = {'action': ai_recommendation, 'reason': ai_reason}
+                                else:
+                                    recommendations[symbol] = {'action': 'HOLD', 'reason': 'Insufficient data for AI analysis'}
+                            else:
+                                try:
+                                    pe_ratio = info.get('trailingPE', np.nan)
+                                    pb_ratio = info.get('priceToBook', np.nan)
+                                    current_price = stock_data['Close'].iloc[-1]
+                                    current_sma44 = sma_44.iloc[-1] if not sma_44.empty else current_price
+                                    action = "HOLD"
+                                    reasons = []
+                                    if current_price > current_sma44 * 1.05:
+                                        reasons.append("Price above 44 SMA (bullish)")
+                                    elif current_price < current_sma44 * 0.95:
+                                        reasons.append("Price below 44 SMA (bearish)")
+                                    if not pd.isna(pe_ratio):
+                                        if pe_ratio < 15:
+                                            reasons.append("Low P/E ratio (undervalued)")
+                                        elif pe_ratio > 30:
+                                            reasons.append("High P/E ratio (overvalued)")
+                                    if not pd.isna(pb_ratio):
+                                        if pb_ratio < 1:
+                                            reasons.append("Low P/B ratio (undervalued)")
+                                        elif pb_ratio > 3:
+                                            reasons.append("High P/B ratio (overvalued)")
+                                    if rsi_5y.iloc[-1] > 70:
+                                        reasons.append("Overbought (RSI 5Y > 70)")
+                                    elif rsi_5y.iloc[-1] < 30:
+                                        reasons.append("Oversold (RSI 5Y < 30)")
+                                    if rsi_1y.iloc[-1] > 70:
+                                        reasons.append("Overbought (RSI 1Y > 70)")
+                                    elif rsi_1y.iloc[-1] < 30:
+                                        reasons.append("Oversold (RSI 1Y < 30)")
+                                    if macd_data_5y['MACD'].iloc[-1] > macd_data_5y['Signal'].iloc[-1]:
+                                        reasons.append("Bullish MACD crossover (5Y)")
+                                    elif macd_data_5y['MACD'].iloc[-1] < macd_data_5y['Signal'].iloc[-1]:
+                                        reasons.append("Bearish MACD crossover (5Y)")
+                                    if macd_data_1y['MACD'].iloc[-1] > macd_data_1y['Signal'].iloc[-1]:
+                                        reasons.append("Bullish MACD crossover (1Y)")
+                                    elif macd_data_1y['MACD'].iloc[-1] < macd_data_1y['Signal'].iloc[-1]:
+                                        reasons.append("Bearish MACD crossover (1Y)")
+                                    if sum(1 for r in reasons if "bullish" in r.lower() or "undervalued" in r.lower()) >= 3:
+                                        action = "BUY"
+                                    elif sum(1 for r in reasons if "bearish" in r.lower() or "overvalued" in r.lower()) >= 3:
+                                        action = "SELL"
+                                    reason = ", ".join(reasons) if reasons else "Neutral signals"
+                                    recommendations[symbol] = {'action': action, 'reason': reason}
+                                except Exception as e:
+                                    st.warning(f"Error in traditional analysis for {symbol}: {str(e)}")
+                                    recommendations[symbol] = {'action': 'HOLD', 'reason': 'Analysis failed due to data issues'}
+                            try:
+                                current_rsi_5y = rsi_5y.iloc[-1] if not rsi_5y.empty else 0
+                                current_macd_5y = macd_data_5y['MACD'].iloc[-1] if not macd_data_5y['MACD'].empty else 0
+                                current_rsi_1y = rsi_1y.iloc[-1] if not rsi_1y.empty else 0
+                                current_macd_1y = macd_data_1y['MACD'].iloc[-1] if not macd_data_1y['MACD'].empty else 0
+                                current_sma44 = sma_44.iloc[-1] if not sma_44.empty else 0
+                                pe_ratio = info.get('trailingPE', 0)
+                                pb_ratio = info.get('priceToBook', 0)
+                                technical_data[symbol] = {
+                                    'RSI_5Y': current_rsi_5y,
+                                    'MACD_5Y': current_macd_5y,
+                                    'RSI_1Y': current_rsi_1y,
+                                    'MACD_1Y': current_macd_1y,
+                                    'SMA_44': current_sma44,
+                                    'PE_Ratio': pe_ratio,
+                                    'PB_Ratio': pb_ratio,
+                                    'Support_Level': support_level,
+                                    'Resistance_Level': resistance_level
+                                }
+                            except Exception as e:
+                                st.warning(f"Error calculating indicators for {symbol}: {str(e)}")
+                                technical_data[symbol] = {
+                                    'RSI_5Y': 0,
+                                    'MACD_5Y': 0,
+                                    'RSI_1Y': 0,
+                                    'MACD_1Y': 0,
+                                    'SMA_44': 0,
+                                    'PE_Ratio': 0,
+                                    'PB_Ratio': 0,
+                                    'Support_Level': 0.0,
+                                    'Resistance_Level': 0.0
+                                }
+                        else:
+                            recommendations[symbol] = {'action': 'HOLD', 'reason': 'Insufficient 5-year data for analysis'}
+                            technical_data[symbol] = {
+                                'RSI_5Y': 0,
+                                'MACD_5Y': 0,
+                                'RSI_1Y': 0,
+                                'MACD_1Y': 0,
+                                'SMA_44': 0,
+                                'PE_Ratio': 0,
+                                'PB_Ratio': 0,
+                                'Support_Level': 0.0,
+                                'Resistance_Level': 0.0
+                            }
+                    except (ValueError, KeyError, urllib.error.URLError) as e:
+                        st.warning(f"Error processing data for {symbol}: {str(e)}")
+                        recommendations[symbol] = {'action': 'HOLD', 'reason': f'Error fetching data: {str(e)}'}
+                        technical_data[symbol] = {
+                            'RSI_5Y': 0,
+                            'MACD_5Y': 0,
+                            'RSI_1Y': 0,
+                            'MACD_1Y': 0,
+                            'SMA_44': 0,
+                            'PE_Ratio': 0,
+                            'PB_Ratio': 0,
+                            'Support_Level': 0.0,
+                            'Resistance_Level': 0.0
+                        }
+
+                # Train AI models after collecting data for all symbols
+                for symbol in symbols:
+                    try:
+                        stock_data = portfolio_analyzer.data_fetcher.get_stock_data(symbol, "NSE", "5y")
+                        stock_data_1y = portfolio_analyzer.data_fetcher.get_stock_data(symbol, "NSE", "1y")
+                        if stock_data is not None and not stock_data.empty and len(stock_data) > 50:
                             features, labels = ai_analyzer.create_training_data(stock_data, symbol)
                             if len(features) > 0:
                                 all_training_features.extend(features)
                                 all_training_labels.extend(labels)
                                 valid_symbols.append(symbol)
-                        except Exception as e:
-                            st.warning(f"Skipping training for {symbol}: {str(e)}")
-                model_trained = False
+                    except (ValueError, KeyError, urllib.error.URLError) as e:
+                        st.warning(f"Skipping training for {symbol}: {str(e)}")
+
+                # Train the models only if sufficient data is available
                 if len(all_training_features) > 100 and valid_symbols:
                     model_trained = ai_analyzer.train_ensemble_models(
                         np.array(all_training_features),
@@ -635,118 +802,31 @@ def analyze_portfolio(portfolio_analyzer):
                     )
                     if model_trained:
                         st.success("✅ AI models trained successfully with ensemble learning!")
+                        # Recompute AI recommendations for valid symbols
+                        for symbol in valid_symbols:
+                            try:
+                                stock_data = portfolio_analyzer.data_fetcher.get_stock_data(symbol, "NSE", "5y")
+                                if stock_data is not None and not stock_data.empty:
+                                    features = ai_analyzer.calculate_advanced_features(stock_data)
+                                    if features:
+                                        ai_recommendation, ai_reason, confidence = ai_analyzer.get_ai_recommendation(features)
+                                        recommendations[symbol] = {'action': ai_recommendation, 'reason': ai_reason}
+                                    else:
+                                        recommendations[symbol] = {'action': 'HOLD', 'reason': 'Insufficient data for AI analysis'}
+                            except (ValueError, KeyError, urllib.error.URLError) as e:
+                                st.warning(f"Error recomputing AI recommendation for {symbol}: {str(e)}")
+                                recommendations[symbol] = {'action': 'HOLD', 'reason': f'Error in AI analysis: {str(e)}'}
                     else:
                         st.warning("⚠️ AI model training failed, using traditional analysis")
                 else:
                     st.info("ℹ️ Insufficient data for AI training, using traditional technical analysis")
-                for symbol in symbols:
-                    stock_data = portfolio_analyzer.data_fetcher.get_stock_data(symbol, "NSE", "5y")
-                    stock_data_1y = portfolio_analyzer.data_fetcher.get_stock_data(symbol, "NSE", "1y")
-                    if stock_data is not None and not stock_data.empty:
-                        if model_trained:
-                            features = ai_analyzer.calculate_advanced_features(stock_data)
-                            ai_recommendation, ai_reason, confidence = ai_analyzer.get_ai_recommendation(features)
-                            recommendations[symbol] = {'action': ai_recommendation, 'reason': ai_reason}
-                        else:
-                            try:
-                                rsi_5y = portfolio_analyzer.tech_indicators.calculate_rsi(stock_data['Close'])
-                                macd_data_5y = portfolio_analyzer.tech_indicators.calculate_macd(stock_data['Close'])
-                                rsi_1y = portfolio_analyzer.tech_indicators.calculate_rsi(stock_data_1y['Close'])
-                                macd_data_1y = portfolio_analyzer.tech_indicators.calculate_macd(stock_data_1y['Close'])
-                                sma_44 = stock_data['Close'].rolling(44).mean()
-                                ticker = yf.Ticker(symbol + ".NS")
-                                info = ticker.info
-                                pe_ratio = info.get('trailingPE', np.nan)
-                                pb_ratio = info.get('priceToBook', np.nan)
-                                current_price = stock_data['Close'].iloc[-1]
-                                current_sma44 = sma_44.iloc[-1] if not sma_44.empty else current_price
-                                action = "HOLD"
-                                reasons = []
-                                if current_price > current_sma44 * 1.05:
-                                    reasons.append("Price above 44 SMA (bullish)")
-                                elif current_price < current_sma44 * 0.95:
-                                    reasons.append("Price below 44 SMA (bearish)")
-                                if not pd.isna(pe_ratio):
-                                    if pe_ratio < 15:
-                                        reasons.append("Low P/E ratio (undervalued)")
-                                    elif pe_ratio > 30:
-                                        reasons.append("High P/E ratio (overvalued)")
-                                if not pd.isna(pb_ratio):
-                                    if pb_ratio < 1:
-                                        reasons.append("Low P/B ratio (undervalued)")
-                                    elif pb_ratio > 3:
-                                        reasons.append("High P/B ratio (overvalued)")
-                                if rsi_5y.iloc[-1] > 70:
-                                    reasons.append("Overbought (RSI 5Y > 70)")
-                                elif rsi_5y.iloc[-1] < 30:
-                                    reasons.append("Oversold (RSI 5Y < 30)")
-                                if rsi_1y.iloc[-1] > 70:
-                                    reasons.append("Overbought (RSI 1Y > 70)")
-                                elif rsi_1y.iloc[-1] < 30:
-                                    reasons.append("Oversold (RSI 1Y < 30)")
-                                if macd_data_5y['MACD'].iloc[-1] > macd_data_5y['Signal'].iloc[-1]:
-                                    reasons.append("Bullish MACD crossover (5Y)")
-                                elif macd_data_5y['MACD'].iloc[-1] < macd_data_5y['Signal'].iloc[-1]:
-                                    reasons.append("Bearish MACD crossover (5Y)")
-                                if macd_data_1y['MACD'].iloc[-1] > macd_data_1y['Signal'].iloc[-1]:
-                                    reasons.append("Bullish MACD crossover (1Y)")
-                                elif macd_data_1y['MACD'].iloc[-1] < macd_data_1y['Signal'].iloc[-1]:
-                                    reasons.append("Bearish MACD crossover (1Y)")
-                                if sum(1 for r in reasons if "bullish" in r.lower() or "undervalued" in r.lower()) >= 3:
-                                    action = "BUY"
-                                elif sum(
-                                        1 for r in reasons if "bearish" in r.lower() or "overvalued" in r.lower()) >= 3:
-                                    action = "SELL"
-                                reason = ", ".join(reasons) if reasons else "Neutral signals"
-                                recommendations[symbol] = {'action': action, 'reason': reason}
-                            except Exception as e:
-                                st.warning(f"Error in traditional analysis for {symbol}: {str(e)}")
-                                recommendations[symbol] = {'action': 'HOLD',
-                                                           'reason': 'Analysis failed due to data issues'}
-                        try:
-                            rsi_5y = portfolio_analyzer.tech_indicators.calculate_rsi(stock_data['Close'])
-                            macd_data_5y = portfolio_analyzer.tech_indicators.calculate_macd(stock_data['Close'])
-                            rsi_1y = portfolio_analyzer.tech_indicators.calculate_rsi(stock_data_1y['Close'])
-                            macd_data_1y = portfolio_analyzer.tech_indicators.calculate_macd(stock_data_1y['Close'])
-                            sma_44 = stock_data['Close'].rolling(44).mean()
-                            ticker = yf.Ticker(symbol + ".NS")
-                            info = ticker.info
-                            current_rsi_5y = rsi_5y.iloc[-1] if not rsi_5y.empty else 0
-                            current_macd_5y = macd_data_5y['MACD'].iloc[-1] if not macd_data_5y['MACD'].empty else 0
-                            current_rsi_1y = rsi_1y.iloc[-1] if not rsi_1y.empty else 0
-                            current_macd_1y = macd_data_1y['MACD'].iloc[-1] if not macd_data_1y['MACD'].empty else 0
-                            current_sma44 = sma_44.iloc[-1] if not sma_44.empty else 0
-                            pe_ratio = info.get('trailingPE', 0)
-                            pb_ratio = info.get('priceToBook', 0)
-                            technical_data[symbol] = {
-                                'RSI_5Y': current_rsi_5y,
-                                'MACD_5Y': current_macd_5y,
-                                'RSI_1Y': current_rsi_1y,
-                                'MACD_1Y': current_macd_1y,
-                                'SMA_44': current_sma44,
-                                'PE_Ratio': pe_ratio,
-                                'PB_Ratio': pb_ratio
-                            }
-                        except Exception as e:
-                            st.warning(f"Error calculating indicators for {symbol}: {str(e)}")
-                            technical_data[symbol] = {'RSI_5Y': 0, 'MACD_5Y': 0, 'RSI_1Y': 0, 'MACD_1Y': 0, 'SMA_44': 0,
-                                                      'PE_Ratio': 0, 'PB_Ratio': 0}
-                    else:
-                        recommendations[symbol] = {'action': 'HOLD', 'reason': 'Insufficient 5-year data for analysis'}
-                        technical_data[symbol] = {'RSI_5Y': 0, 'MACD_5Y': 0, 'RSI_1Y': 0, 'MACD_1Y': 0, 'SMA_44': 0,
-                                                  'PE_Ratio': 0, 'PB_Ratio': 0}
+
             portfolio_display = portfolio_df.copy()
             portfolio_display['Recommendation'] = portfolio_display['Symbol'].map(
                 lambda x: recommendations.get(x, {}).get('action', 'N/A')
             )
             portfolio_display['Reason'] = portfolio_display['Symbol'].map(
                 lambda x: recommendations.get(x, {}).get('reason', 'N/A')
-            )
-            portfolio_display['RSI_5Y'] = portfolio_display['Symbol'].map(
-                lambda x: technical_data.get(x, {}).get('RSI_5Y', 0)
-            )
-            portfolio_display['MACD_5Y'] = portfolio_display['Symbol'].map(
-                lambda x: technical_data.get(x, {}).get('MACD_5Y', 0)
             )
             portfolio_display['RSI_1Y'] = portfolio_display['Symbol'].map(
                 lambda x: technical_data.get(x, {}).get('RSI_1Y', 0)
@@ -762,6 +842,12 @@ def analyze_portfolio(portfolio_analyzer):
             )
             portfolio_display['PB_Ratio'] = portfolio_display['Symbol'].map(
                 lambda x: technical_data.get(x, {}).get('PB_Ratio', 0)
+            )
+            portfolio_display['Support_Level'] = portfolio_display['Symbol'].map(
+                lambda x: technical_data.get(x, {}).get('Support_Level', 0)
+            )
+            portfolio_display['Resistance_Level'] = portfolio_display['Symbol'].map(
+                lambda x: technical_data.get(x, {}).get('Resistance_Level', 0)
             )
 
             def style_recommendation(val):
@@ -794,30 +880,30 @@ def analyze_portfolio(portfolio_analyzer):
             table_data['Current_Value'] = table_data['Current_Value'].round(0)
             table_data['PnL'] = table_data['PnL'].round(0)
             table_data['PnL_Percentage'] = table_data['PnL_Percentage'].round(1)
-            table_data['RSI_5Y'] = table_data['RSI_5Y'].round(1)
-            table_data['MACD_5Y'] = table_data['MACD_5Y'].round(0)
             table_data['RSI_1Y'] = table_data['RSI_1Y'].round(1)
-            table_data['MACD_1Y'] = table_data['MACD_1Y'].round(0)
+            table_data['MACD_1Y'] = table_data['MACD_1Y'].round(3)
             table_data['SMA_44'] = table_data['SMA_44'].round(2)
             table_data['PE_Ratio'] = table_data['PE_Ratio'].round(2)
             table_data['PB_Ratio'] = table_data['PB_Ratio'].round(2)
+            table_data['Support_Level'] = table_data['Support_Level'].round(2)
+            table_data['Resistance_Level'] = table_data['Resistance_Level'].round(2)
             table_sorted = table_data.sort_values(by='PnL_Percentage', ascending=False)
             column_config = {
                 "Symbol": st.column_config.TextColumn("🏢 Symbol", width="small"),
                 "Quantity": st.column_config.NumberColumn("📦 Qty", width="small"),
                 "Buy_Price": st.column_config.NumberColumn("💰 Buy Price", format="₹%.2f", width="small"),
                 "Current_Price": st.column_config.NumberColumn("💎 Current Price", format="₹%.2f", width="small"),
-                "Invested_Amount": st.column_config.TextColumn("💸 Invested", width="medium"),
-                "Current_Value": st.column_config.TextColumn("💰 Current Value", width="medium"),
+                "Invested_Amount": st.column_config.TextColumn("💸 Invested", width="small"),
+                "Current_Value": st.column_config.TextColumn("💰 Current Value", width="small"),
                 "PnL": st.column_config.TextColumn("📈 P&L", width="small"),
                 "PnL_Percentage": st.column_config.NumberColumn("📊 P&L %", format="%.1f%%", width="small"),
-                "RSI_5Y": st.column_config.NumberColumn("🎯 RSI (5Y)", format="%.1f", width="small"),
-                "MACD_5Y": st.column_config.NumberColumn("📉 MACD (5Y)", format="%.3f", width="small"),
                 "RSI_1Y": st.column_config.NumberColumn("🎯 RSI (1Y)", format="%.1f", width="small"),
                 "MACD_1Y": st.column_config.NumberColumn("📉 MACD (1Y)", format="%.3f", width="small"),
                 "SMA_44": st.column_config.NumberColumn("📈 44 SMA", format="₹%.2f", width="small"),
                 "PE_Ratio": st.column_config.NumberColumn("📊 P/E Ratio", format="%.2f", width="small"),
                 "PB_Ratio": st.column_config.NumberColumn("📊 P/B Ratio", format="%.2f", width="small"),
+                "Support_Level": st.column_config.NumberColumn("📉 Support", format="₹%.2f", width="small"),
+                "Resistance_Level": st.column_config.NumberColumn("📈 Resistance", format="₹%.2f", width="small"),
                 "Recommendation": st.column_config.TextColumn("🤖 Signal", width="small"),
                 "Reason": st.column_config.TextColumn("💡 Analysis", width="large")
             }
@@ -829,8 +915,8 @@ def analyze_portfolio(portfolio_analyzer):
             st.data_editor(
                 display_data[['Symbol', 'Quantity', 'Buy_Price', 'Current_Price',
                               'Invested_Amount', 'Current_Value', 'PnL', 'PnL_Percentage',
-                              'RSI_5Y', 'MACD_5Y', 'RSI_1Y', 'MACD_1Y', 'SMA_44', 'PE_Ratio', 'PB_Ratio',
-                              'Recommendation', 'Reason']],
+                              'RSI_1Y', 'MACD_1Y', 'SMA_44', 'PE_Ratio', 'PB_Ratio',
+                              'Support_Level', 'Resistance_Level', 'Recommendation', 'Reason']],
                 column_config=column_config,
                 use_container_width=True,
                 height=400,
@@ -844,7 +930,7 @@ def analyze_portfolio(portfolio_analyzer):
                     "🧠 **Advanced AI Analysis Active** - Using ensemble machine learning models trained on 5-year data with RSI, MACD, and moving averages")
             else:
                 st.info(
-                    "📊 **Technical Analysis Mode** - Using traditional indicators with 5-year and 1-year RSI, MACD, SMA, P/E, and P/B ratio")
+                    "📊 **Technical Analysis Mode** - Using traditional indicators with 5-year and 1-year RSI, MACD, SMA, P/E, P/B, and support/resistance levels")
             buy_stocks = [symbol for symbol in symbols if recommendations.get(symbol, {}).get('action') == 'BUY']
             sell_stocks = [symbol for symbol in symbols if recommendations.get(symbol, {}).get('action') == 'SELL']
             hold_stocks = [symbol for symbol in symbols if recommendations.get(symbol, {}).get('action') == 'HOLD']
