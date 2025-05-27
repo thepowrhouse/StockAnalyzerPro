@@ -5,29 +5,12 @@ import warnings
 import numpy as np
 import pandas as pd
 import streamlit as st
-#from sklearn.ensemble import HistGradientBoostingClassifier
-# from sklearn.impute import SimpleImputer
-# from sklearn.linear_model import LogisticRegression
-# from sklearn.pipeline import Pipeline
-# from sklearn.preprocessing import StandardScaler
+from sklearn.ensemble import HistGradientBoostingClassifier
+from sklearn.impute import SimpleImputer
+from sklearn.linear_model import LogisticRegression
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 from portfolio_analyzer import PortfolioAnalyzer
-
-def install_package(package):
-    subprocess.check_call([sys.executable, "-m", "pip", "install", package])
-
-try:
-    from sklearn.ensemble import HistGradientBoostingClassifier
-    from sklearn.impute import SimpleImputer
-    from sklearn.linear_model import LogisticRegression
-    from sklearn.pipeline import Pipeline
-    from sklearn.preprocessing import StandardScaler
-except ImportError:
-    install_package('scikit-learn')
-    from sklearn.ensemble import HistGradientBoostingClassifier
-    from sklearn.impute import SimpleImputer
-    from sklearn.linear_model import LogisticRegression
-    from sklearn.pipeline import Pipeline
-    from sklearn.preprocessing import StandardScaler
 
 warnings.filterwarnings('ignore')
 
