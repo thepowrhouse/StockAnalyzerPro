@@ -1,5 +1,11 @@
-streamlit==1.36.0
-pandas==2.0.3
-yfinance==0.2.40
-scikit-learn==1.3.2
-numpy==1.24.3
+streamlit>=1.28.0
+scikit-learn>=1.3.0
+pandas>=2.0.0
+numpy>=1.24.0
+matplotlib>=3.7.0
+seaborn>=0.12.0
+plotly>=5.15.0
+yfinance>=0.2.0
+requests>=2.31.0
+ta-lib
+scipy
