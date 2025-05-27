@@ -1,10 +1,10 @@
+import subprocess
 import sys
 import urllib.error
 import warnings
 import numpy as np
 import pandas as pd
 import streamlit as st
-from pip._internal.utils import subprocess
 #from sklearn.ensemble import HistGradientBoostingClassifier
 # from sklearn.impute import SimpleImputer
 # from sklearn.linear_model import LogisticRegression
