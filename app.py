@@ -1,21 +1,14 @@
-import streamlit as st
-import pandas as pd
-import yfinance as yf
-from datetime import datetime, timedelta
-import time
-import numpy as np
-from stock_data import StockDataFetcher
-from technical_indicators import TechnicalIndicators
-from portfolio_analyzer import PortfolioAnalyzer
-from sklearn.impute import SimpleImputer
-from sklearn.pipeline import Pipeline
-from sklearn.ensemble import RandomForestClassifier, HistGradientBoostingClassifier
-from sklearn.linear_model import LogisticRegression
-from sklearn.preprocessing import StandardScaler
-import warnings
-from sklearn.compose import ColumnTransformer
 import urllib.error
-import uuid
+import warnings
+import numpy as np
+import pandas as pd
+import streamlit as st
+from sklearn.ensemble import HistGradientBoostingClassifier
+from sklearn.impute import SimpleImputer
+from sklearn.linear_model import LogisticRegression
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+from portfolio_analyzer import PortfolioAnalyzer
 
 warnings.filterwarnings('ignore')
 
