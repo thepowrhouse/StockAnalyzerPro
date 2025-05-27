@@ -6,10 +6,10 @@ import pandas as pd
 import streamlit as st
 from pip._internal.utils import subprocess
 #from sklearn.ensemble import HistGradientBoostingClassifier
-from sklearn.impute import SimpleImputer
-from sklearn.linear_model import LogisticRegression
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
+# from sklearn.impute import SimpleImputer
+# from sklearn.linear_model import LogisticRegression
+# from sklearn.pipeline import Pipeline
+# from sklearn.preprocessing import StandardScaler
 from portfolio_analyzer import PortfolioAnalyzer
 
 def install_package(package):
@@ -20,6 +20,10 @@ try:
 except ImportError:
     install_package('scikit-learn')
     from sklearn.ensemble import HistGradientBoostingClassifier
+    from sklearn.impute import SimpleImputer
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.pipeline import Pipeline
+    from sklearn.preprocessing import StandardScaler
 
 warnings.filterwarnings('ignore')
 
