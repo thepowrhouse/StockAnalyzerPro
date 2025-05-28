@@ -1,13 +1,13 @@
 # requirements.txt
-streamlit>=1.45.1
-scikit-learn>=1.3.2
-pandas>=2.2.3
-numpy>=2.2.6
+streamlit==1.45.1
+scikit-learn==1.3.2
+pandas==2.2.3
+numpy==2.2.6
 matplotlib
 seaborn
-plotly>=6.1.1
-yfinance>=0.2.61
+plotly==6.1.1
+yfinance==0.2.61
 requests
-#ta-lib
 scipy
-#lightgbm
+# ta-lib   # Removed - requires system dependencies
+# lightgbm # Removed - causes conflicts

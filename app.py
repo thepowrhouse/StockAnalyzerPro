@@ -1,7 +1,34 @@
-# Add to top of app.py
-import os
-if not os.path.exists('sklearn'):
-    os.system('pip install scikit-learn>=1.3.2')
+import os, sys
+from subprocess import run, CalledProcessError
+
+# List of core dependencies
+dependencies = [
+    "numpy==2.2.6",
+    "pandas==2.2.3",
+    "scikit-learn==1.3.2",
+    "streamlit==1.45.1"
+]
+
+
+def install_missing_packages():
+    missing = []
+    for dep in dependencies:
+        try:
+            __import__(dep.split('==')[0])
+        except ImportError:
+            missing.append(dep)
+
+    if missing:
+        print(f"⛔ Missing packages: {missing}", file=sys.stderr)
+        try:
+            run([sys.executable, "-m", "pip", "install"] + missing, check=True)
+            print("✅ Missing packages installed", file=sys.stderr)
+        except CalledProcessError:
+            print("💥 FAILED to install packages", file=sys.stderr)
+            sys.exit(1)
+
+
+install_missing_packages()
 
 import urllib.error
 import warnings
