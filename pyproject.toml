@@ -1,7 +1,7 @@
 [project]
 name = "repl-nix-workspace"
 version = "0.1.0"
-description = "Add your description here"
+description = "App to perform Portfolio Analysis and provide BUY and SELL Recommendations"
 requires-python = ">=3.11"
 dependencies = [
     "numpy>=2.2.6",

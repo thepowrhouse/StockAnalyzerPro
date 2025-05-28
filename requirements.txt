@@ -11,3 +11,4 @@ requests
 scipy
 # ta-lib   # Removed - requires system dependencies
 # lightgbm # Removed - causes conflicts
+--only-binary :all: scikit-learn
