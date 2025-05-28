@@ -28,7 +28,7 @@ def install_missing_packages():
             sys.exit(1)
 
 
-#install_missing_packages()
+#install_missing_packages() //Commented as Streamlit cloud doesnt support this
 
 import urllib.error
 import warnings
@@ -699,7 +699,12 @@ def analyze_portfolio(portfolio_analyzer):
                     help="Extended Internal Rate of Return (annualized)" if xirr_display != "N/A" else "XIRR calculation failed due to insufficient data or invalid cash flows"
                 )
                 if xirr_display == "N/A":
-                    st.warning("⚠️ XIRR calculation failed. Ensure buy dates and prices are valid and include sufficient transaction history.")
+                    st.warning("""
+                    ⚠️ XIRR calculation failed. Common causes:
+                    - Invalid date formats (use YYYY-MM-DD)
+                    - Missing buy price/quantity values
+                    - Portfolio with only one transaction
+                    """)
             st.markdown("---")
             st.markdown("### 📋 Detailed Holdings & Investment Analysis")
             recommendations = {}
@@ -818,7 +823,9 @@ def analyze_portfolio(portfolio_analyzer):
                     symbol = pair['Symbol']
                     exchange = pair['Exchange']
                     try:
-                        stock_data = portfolio_analyzer.data_fetcher.get_stock_data(symbol, exchange, "5y")
+                        # Format symbol with exchange suffix
+                        formatted_symbol = portfolio_analyzer.format_symbol(symbol, exchange)
+                        stock_data = portfolio_analyzer.data_fetcher.get_stock_data(formatted_symbol, exchange, "5y")
                         if stock_data is not None and not stock_data.empty and len(stock_data) > 50:
                             features, labels = ai_analyzer.create_training_data(stock_data, symbol)
                             if len(features) > 0:

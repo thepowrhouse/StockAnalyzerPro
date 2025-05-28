@@ -2,6 +2,9 @@ import pandas as pd
 import numpy as np
 import streamlit as st
 from datetime import datetime, timedelta
+
+from scipy.optimize import newton
+
 from stock_data import StockDataFetcher
 from technical_indicators import TechnicalIndicators
 
@@ -69,6 +72,15 @@ class PortfolioAnalyzer:
         Expected columns: Symbol, Quantity, Buy_Price, Buy_Date
         """
         required_columns = ['Symbol', 'Quantity', 'Buy_Price', 'Buy_Date']
+
+        # In validate_csv_format method
+        try:
+            df['Buy_Date'] = pd.to_datetime(df['Buy_Date'], errors='coerce')
+            invalid_dates = df[df['Buy_Date'].isna()]
+            if not invalid_dates.empty:
+                return False, "Invalid date format in Buy_Date column"
+        except Exception as e:
+            return False, f"Date parsing error: {str(e)}"
         
         # Check if all required columns exist (case-insensitive)
         df_columns_lower = [col.lower() for col in df.columns]
@@ -106,13 +118,27 @@ class PortfolioAnalyzer:
         
         return True, df
 
+    def format_symbol(self, symbol, exchange):
+        """Format symbol with exchange suffix for yfinance"""
+        if not exchange:
+            exchange = 'NSE'
+        exchange = exchange.strip().upper()
+        if exchange == 'NSE':
+            return symbol + '.NS'
+        elif exchange == 'BSE':
+            return symbol + '.BO'  # Add BSE suffix
+        else:  # For NASDAQ, NYSE, etc.
+            return symbol
+
     def get_current_prices(self, symbols, exchange):
         """Get current market prices for symbols"""
         prices = {}
         for symbol in symbols:
             try:
-                # Use get_stock_info to fetch current price
-                info = self.data_fetcher.get_stock_info(symbol, exchange)
+                # Format symbol with exchange suffix
+                formatted_symbol = self.format_symbol(symbol, exchange)
+                # Fetch using formatted symbol
+                info = self.data_fetcher.get_stock_info(formatted_symbol, exchange)
                 prices[symbol] = info.get('currentPrice', np.nan)
             except Exception as e:
                 print(f"Error fetching price for {symbol}: {str(e)}")
@@ -165,30 +191,24 @@ class PortfolioAnalyzer:
 
         return pd.DataFrame(portfolio_data)
 
-    def calculate_xirr(self, cash_flows, dates):
-        """Robust XIRR calculation with error handling"""
+    def calculate_xirr(self, cashflows):
+        """Calculate XIRR given a list of (date, amount) tuples"""
+        if len(cashflows) < 2:
+            return None
+
+        # Convert to ordinal dates for numerical calculation
+        dates, amounts = zip(*cashflows)
+        dates = [d.toordinal() for d in dates]
+
+        # Define the XIRR function
+        def xirr_func(rate):
+            return sum(amt / (1 + rate) ** ((d - dates[0]) / 365) for d, amt in zip(dates, amounts))
+
         try:
-            # Filter out zero cash flows
-            valid_indices = [i for i, cf in enumerate(cash_flows) if cf != 0]
-            if len(valid_indices) < 2:
-                return 0
-
-            filtered_cash_flows = [cash_flows[i] for i in valid_indices]
-            filtered_dates = [dates[i] for i in valid_indices]
-
-            # Convert dates to years since first date
-            min_date = min(filtered_dates)
-            years = [(d - min_date).days / 365.25 for d in filtered_dates]
-
-            # Use numpy_financial for accurate XIRR calculation
-            try:
-                import numpy_financial as npf
-                return npf.irr(filtered_cash_flows) * 100
-            except ImportError:
-                # Fallback to iterative method
-                return self._xirr_fallback(filtered_cash_flows, years)
-        except Exception:
-            return 0
+            # Use Newton-Raphson method to solve
+            return newton(xirr_func, 0.1) * 100  # Convert to percentage
+        except:
+            return None
 
     def _xirr_fallback(self, cash_flows, years):
         """Fallback XIRR calculation method"""
@@ -288,21 +308,38 @@ class PortfolioAnalyzer:
         total_current_value = portfolio_df['Current_Value'].sum()
         total_pnl = portfolio_df['PnL'].sum()
         overall_pnl_percentage = (total_pnl / total_invested) * 100 if total_invested > 0 else 0
-        
-        # Calculate portfolio XIRR
-        cash_flows = []
-        dates = []
-        
-        # Add all investments as negative cash flows
+
+        # Calculate XIRR
+        cashflows = []
+        today = datetime.today().date()
+
         for _, row in portfolio_df.iterrows():
-            cash_flows.append(-row['Invested_Amount'])
-            dates.append(row['Buy_Date'])
-        
-        # Add current portfolio value as positive cash flow
-        cash_flows.append(total_current_value)
-        dates.append(datetime.now())
-        
-        portfolio_xirr = self.calculate_xirr(cash_flows, dates)
+            try:
+                buy_date = pd.to_datetime(row['Buy_Date']).date()
+                # Add investment as negative cash flow
+                cashflows.append((
+                    buy_date,
+                    -float(row['Quantity'] * row['Buy_Price'])
+                ))
+            except:
+                continue
+
+        # Add current value as positive cash flow on today's date
+        cashflows.append((today, float(portfolio_df['Current_Value'].sum())))
+
+        # Calculate XIRR
+        try:
+            portfolio_xirr = self.calculate_xirr(cashflows)
+        except Exception as e:
+            st.error(f"XIRR calculation failed: {str(e)}")
+            portfolio_xirr = None
+
+        if portfolio_xirr is None:
+            # Convert cashflows to (amount, years) format
+            min_date = min(d for d, _ in cashflows)
+            cash_flows = [amt for _, amt in cashflows]
+            years = [(d - min_date).days / 365.25 for d, _ in cashflows]
+            portfolio_xirr = self._xirr_fallback(cash_flows, years)
         
         # Calculate average CAGR (weighted by investment amount)
         total_weighted_cagr = 0

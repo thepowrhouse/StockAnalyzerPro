@@ -6,7 +6,7 @@ numpy==2.2.6
 matplotlib
 seaborn
 plotly==6.1.1
-yfinance==0.2.61
+yfinance
 requests
 scipy
 # ta-lib   # Removed - requires system dependencies
