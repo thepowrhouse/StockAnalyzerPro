@@ -39,6 +39,9 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
+from portfolio_analyzer import PortfolioAnalyzer
+from stock_data import StockDataFetcher
+from technical_indicators import TechnicalIndicators
 
 # Set page config as the first Streamlit command
 st.set_page_config(
@@ -80,6 +83,7 @@ def format_indian_currency(amount):
 
 class AIPortfolioAnalyzer:
     def __init__(self):
+        self.tech_indicators = TechnicalIndicators()
         self.scaler = StandardScaler()
         self.model = None
         self.support_model = None
@@ -578,9 +582,10 @@ def main():
     </div>
     """, unsafe_allow_html=True)
     portfolio_analyzer = PortfolioAnalyzer()
-    analyze_portfolio(portfolio_analyzer)
+    stockdata_fetcher = StockDataFetcher()
+    analyze_portfolio(portfolio_analyzer, stockdata_fetcher)
 
-def analyze_portfolio(portfolio_analyzer):
+def analyze_portfolio(portfolio_analyzer, fetcher):
     """Portfolio analysis functionality"""
     st.markdown('<div class="upload-section">', unsafe_allow_html=True)
     col1, col2 = st.columns([2, 1])
@@ -629,6 +634,8 @@ def analyze_portfolio(portfolio_analyzer):
                 st.error(f"❌ Missing required columns: {', '.join(missing_columns)}")
                 st.stop()
             # Add Exchange column with default 'NSE' if not present
+            df['Exchange'] = df['Exchange'].str.upper()
+
             if 'Exchange' not in df.columns:
                 df['Exchange'] = 'NSE'
                 st.info("ℹ️ Exchange column not found in CSV. Defaulting to NSE for all stocks.")
@@ -656,7 +663,7 @@ def analyze_portfolio(portfolio_analyzer):
                     symbol = pair['Symbol']
                     exchange = pair['Exchange']
                     try:
-                        price = portfolio_analyzer.get_current_prices([symbol], exchange=exchange)
+                        price = fetcher.get_current_prices([symbol], exchange=exchange)
                         current_prices[symbol] = price.get(symbol, np.nan)
                     except Exception as e:
                         st.warning(f"Error fetching price for {symbol} on {exchange}: {str(e)}")
@@ -673,12 +680,21 @@ def analyze_portfolio(portfolio_analyzer):
                     help="Total amount invested across all holdings"
                 )
             with col2:
+                total_change = summary['total_current_value'] - summary['total_invested']
                 pnl_delta = format_indian_currency(summary['total_pnl'])
                 delta_color = "normal" if summary['total_pnl'] >= 0 else "inverse"
+
+                if total_change < 0:
+                    delta_color = "inverse"  # Red for negative
+                    pnl_delta = f"▼ {pnl_delta}"
+                elif total_change > 0:
+                    pnl_delta = f"▲ {pnl_delta}"
+
                 st.metric(
                     "💎 Current Value",
                     format_indian_currency(summary['total_current_value']),
                     delta=pnl_delta,
+                    delta_color=delta_color,
                     help="Current market value of your portfolio"
                 )
             with col3:
@@ -715,13 +731,16 @@ def analyze_portfolio(portfolio_analyzer):
                 all_training_features = []
                 all_training_labels = []
                 valid_symbols = []
+                # Add this dictionary to store stock names
+                stock_names = {}
 
                 for _, pair in enumerate(symbol_exchange_pairs):
                     symbol = pair['Symbol']
                     exchange = pair['Exchange']
                     try:
-                        stock_data = portfolio_analyzer.data_fetcher.get_stock_data(symbol, exchange, "5y")
-                        stock_data_1y = portfolio_analyzer.data_fetcher.get_stock_data(symbol, exchange, "1y")
+                        stock_data = fetcher.get_stock_data(symbol, exchange, "5y")
+                        stock_data_1y = fetcher.get_stock_data(symbol, exchange, "1y")
+
                         if stock_data is not None and not stock_data.empty:
                             try:
                                 rsi_5y = portfolio_analyzer.tech_indicators.calculate_rsi(stock_data['Close'])
@@ -729,7 +748,7 @@ def analyze_portfolio(portfolio_analyzer):
                                 rsi_1y = portfolio_analyzer.tech_indicators.calculate_rsi(stock_data_1y['Close'])
                                 macd_data_1y = portfolio_analyzer.tech_indicators.calculate_macd(stock_data_1y['Close'])
                                 sma_44 = stock_data['Close'].rolling(44).mean()
-                                info = portfolio_analyzer.data_fetcher.get_stock_info(symbol, exchange)
+                                info = fetcher.get_stock_info(symbol, exchange)
                                 current_price = stock_data['Close'].iloc[-1]
                                 ai_analyzer.initialize_models(stock_data, symbol)
                                 support_level, resistance_level = ai_analyzer._calculate_support_resistance(stock_data)
@@ -824,8 +843,10 @@ def analyze_portfolio(portfolio_analyzer):
                     exchange = pair['Exchange']
                     try:
                         # Format symbol with exchange suffix
-                        formatted_symbol = portfolio_analyzer.format_symbol(symbol, exchange)
-                        stock_data = portfolio_analyzer.data_fetcher.get_stock_data(formatted_symbol, exchange, "5y")
+                        formatted_symbol = fetcher.format_symbol(symbol, exchange)
+                        stock_data = fetcher.get_stock_data(formatted_symbol, exchange, "5y")
+                        info = fetcher.get_stock_info(symbol, exchange)
+                        stock_names[symbol] = info.get('stock_name', symbol)
                         if stock_data is not None and not stock_data.empty and len(stock_data) > 50:
                             features, labels = ai_analyzer.create_training_data(stock_data, symbol)
                             if len(features) > 0:
@@ -844,7 +865,7 @@ def analyze_portfolio(portfolio_analyzer):
                         st.success("✅ AI models trained successfully with LightGBM!")
                         for symbol in valid_symbols:
                             try:
-                                stock_data = portfolio_analyzer.data_fetcher.get_stock_data(symbol, df[df['Symbol'] == symbol]['Exchange'].iloc[0], "5y")
+                                stock_data = fetcher.get_stock_data(symbol, df[df['Symbol'] == symbol]['Exchange'].iloc[0], "5y")
                                 if stock_data is not None and not stock_data.empty:
                                     features = ai_analyzer.calculate_advanced_features(stock_data)
                                     if features:
@@ -862,6 +883,9 @@ def analyze_portfolio(portfolio_analyzer):
                     st.info("ℹ️ Insufficient data for AI training, using traditional technical analysis")
 
             portfolio_display = portfolio_df.copy()
+            portfolio_display['Stock_Name'] = portfolio_display['Symbol'].map(
+                lambda x: stock_names.get(x, x)  # Use symbol if name not found
+            )
             portfolio_display['Recommendation'] = portfolio_display['Symbol'].map(
                 lambda x: recommendations.get(x, {}).get('action', 'N/A')
             )
@@ -933,6 +957,7 @@ def analyze_portfolio(portfolio_analyzer):
             table_sorted = table_data.sort_values(by='PnL_Percentage', ascending=False)
             column_config = {
                 "Symbol": st.column_config.TextColumn("🏢 Symbol", width="small"),
+                "Stock_Name": st.column_config.TextColumn("🏢 Company", width="medium"),
                 "Exchange": st.column_config.TextColumn("🌐 Exchange", width="small"),
                 "Quantity": st.column_config.NumberColumn("📦 Qty", width="small"),
                 "Buy_Price": st.column_config.NumberColumn("💰 Buy Price", format="₹%.2f", width="small"),
@@ -957,7 +982,7 @@ def analyze_portfolio(portfolio_analyzer):
             display_data['PnL'] = table_data['PnL'].apply(format_indian_currency)
             st.markdown("**💡 Click on any column header to sort the data**")
             st.data_editor(
-                display_data[['Symbol', 'Exchange', 'Quantity', 'Buy_Price', 'Current_Price',
+                display_data[['Symbol', 'Stock_Name', 'Exchange', 'Quantity', 'Buy_Price', 'Current_Price',
                               'Invested_Amount', 'Current_Value', 'PnL', 'PnL_Percentage',
                               'RSI_1Y', 'MACD_1Y', 'SMA_44', 'PE_Ratio', 'PB_Ratio',
                               'Support_Level', 'Resistance_Level', 'Recommendation', 'Reason']],

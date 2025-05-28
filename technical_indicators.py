@@ -271,3 +271,18 @@ class TechnicalIndicators:
             signals['overall'] = 'bearish'
         
         return signals
+
+    def calculate_rsi_multi_period(self, prices, periods=[14, 50]):
+        """Calculate RSI for multiple periods"""
+        results = {}
+        for period in periods:
+            results[f'RSI_{period}'] = self.calculate_rsi(prices, period)
+        return results
+
+    def calculate_macd_multi_period(self, prices, configs={'1Y': (12, 26, 9), '5Y': (24, 52, 18)}):
+        """Calculate MACD for multiple configurations"""
+        results = {}
+        for timeframe, (fast, slow, signal) in configs.items():
+            macd_data = self.calculate_macd(prices, fast, slow, signal)
+            results[f'MACD_{timeframe}'] = macd_data['Histogram']
+        return results

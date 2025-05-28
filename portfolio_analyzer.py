@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import streamlit as st
 from datetime import datetime, timedelta
+import yfinance as yf
 
 from scipy.optimize import newton
 
@@ -10,9 +11,8 @@ from technical_indicators import TechnicalIndicators
 
 class PortfolioAnalyzer:
     """Class to analyze portfolio holdings and provide recommendations"""
-    
+
     def __init__(self):
-        self.data_fetcher = StockDataFetcher()
         self.tech_indicators = TechnicalIndicators()
 
     def validate_symbol(self, symbol):
@@ -118,33 +118,6 @@ class PortfolioAnalyzer:
         
         return True, df
 
-    def format_symbol(self, symbol, exchange):
-        """Format symbol with exchange suffix for yfinance"""
-        if not exchange:
-            exchange = 'NSE'
-        exchange = exchange.strip().upper()
-        if exchange == 'NSE':
-            return symbol + '.NS'
-        elif exchange == 'BSE':
-            return symbol + '.BO'  # Add BSE suffix
-        else:  # For NASDAQ, NYSE, etc.
-            return symbol
-
-    def get_current_prices(self, symbols, exchange):
-        """Get current market prices for symbols"""
-        prices = {}
-        for symbol in symbols:
-            try:
-                # Format symbol with exchange suffix
-                formatted_symbol = self.format_symbol(symbol, exchange)
-                # Fetch using formatted symbol
-                info = self.data_fetcher.get_stock_info(formatted_symbol, exchange)
-                prices[symbol] = info.get('currentPrice', np.nan)
-            except Exception as e:
-                print(f"Error fetching price for {symbol}: {str(e)}")
-                prices[symbol] = np.nan
-        return prices
-
     def calculate_portfolio_metrics(self, df, current_prices):
         """Calculate portfolio metrics including P&L, CAGR"""
         portfolio_data = []
@@ -244,60 +217,6 @@ class PortfolioAnalyzer:
             return mid * 100
         except Exception:
             return 0
-    
-    def get_technical_recommendations(self, symbol):
-        """Get buy/sell recommendation based on technical indicators"""
-        try:
-            # Fetch recent data for technical analysis
-            stock_data = self.data_fetcher.get_stock_data(symbol, "NSE", "3mo")
-            
-            if stock_data is None or stock_data.empty:
-                return "NO_DATA", "Insufficient data for analysis"
-            
-            # Calculate technical indicators
-            rsi = self.tech_indicators.calculate_rsi(stock_data['Close'])
-            macd_data = self.tech_indicators.calculate_macd(stock_data['Close'])
-            
-            # Get latest values
-            latest_rsi = rsi.iloc[-1] if not rsi.empty else 50
-            latest_macd = macd_data['MACD'].iloc[-1] if not macd_data['MACD'].empty else 0
-            latest_signal = macd_data['Signal'].iloc[-1] if not macd_data['Signal'].empty else 0
-            
-            # Simple recommendation logic
-            signals = []
-            
-            # RSI signals
-            if latest_rsi > 70:
-                signals.append("SELL")  # Overbought
-            elif latest_rsi < 30:
-                signals.append("BUY")   # Oversold
-            else:
-                signals.append("HOLD")  # Neutral
-            
-            # MACD signals
-            if latest_macd > latest_signal:
-                signals.append("BUY")   # Bullish crossover
-            else:
-                signals.append("SELL")  # Bearish crossover
-            
-            # Combine signals
-            buy_signals = signals.count("BUY")
-            sell_signals = signals.count("SELL")
-            
-            if buy_signals > sell_signals:
-                recommendation = "BUY"
-                reason = f"RSI: {latest_rsi:.2f}, MACD above signal line"
-            elif sell_signals > buy_signals:
-                recommendation = "SELL"
-                reason = f"RSI: {latest_rsi:.2f}, MACD below signal line"
-            else:
-                recommendation = "HOLD"
-                reason = f"Mixed signals - RSI: {latest_rsi:.2f}"
-            
-            return recommendation, reason
-        
-        except Exception as e:
-            return "ERROR", f"Analysis error: {str(e)}"
     
     def generate_portfolio_summary(self, portfolio_df):
         """Generate overall portfolio summary"""
