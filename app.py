@@ -1,26 +1,31 @@
-import subprocess
-import sys
 import urllib.error
 import warnings
 import numpy as np
 import pandas as pd
 import streamlit as st
-from sklearn.ensemble import HistGradientBoostingClassifier
+from sklearn.ensemble import RandomForestRegressor
 from sklearn.impute import SimpleImputer
-from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
-from portfolio_analyzer import PortfolioAnalyzer
 
-warnings.filterwarnings('ignore')
-
-# Configure page
+# Set page config as the first Streamlit command
 st.set_page_config(
     page_title="Portfolio Manager",
     page_icon="💼",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
+
+# Check for LightGBM availability after set_page_config
+try:
+    from lightgbm import LGBMClassifier
+    LIGHTGBM_AVAILABLE = True
+except ImportError:
+    LIGHTGBM_AVAILABLE = False
+
+from portfolio_analyzer import PortfolioAnalyzer
+
+warnings.filterwarnings('ignore')
 
 # Initialize session state
 if 'last_refresh' not in st.session_state:
@@ -29,7 +34,6 @@ if 'stock_data' not in st.session_state:
     st.session_state.stock_data = None
 if 'current_symbol' not in st.session_state:
     st.session_state.current_symbol = None
-
 
 def format_indian_currency(amount):
     """Format numbers as Indian currency with proper comma placement"""
@@ -42,27 +46,63 @@ def format_indian_currency(amount):
     else:
         return f"₹{amount:,.0f}"
 
-
 class AIPortfolioAnalyzer:
     def __init__(self):
         self.scaler = StandardScaler()
-        self.models = {
-            'logistic_regression': Pipeline([
+        self.model = None
+        self.support_model = None
+        self.resistance_model = None
+        self.model_fitted = False
+        self.support_model_fitted = False
+        self.resistance_model_fitted = False
+
+        # Define numerical features for training (EXCLUDING portfolio-specific fields)
+        self.numerical_features = [
+            'RSI_1Y', 'RSI_5Y', 'MACD_1Y', 'MACD_5Y', 'SMA_44',
+            'Momentum', 'Volatility', 'MA20_Cross_SMA44', 'Volume_Ratio'
+        ]
+
+        # Initialize LightGBM model if available
+        if LIGHTGBM_AVAILABLE:
+            self.model = Pipeline([
                 ('imputer', SimpleImputer(strategy='median')),
                 ('scaler', StandardScaler()),
-                ('classifier', LogisticRegression(random_state=42))
-            ]),
-            'gradient_boosting': Pipeline([
-                ('imputer', SimpleImputer(strategy='median')),
-                ('scaler', StandardScaler()),
-                ('classifier', HistGradientBoostingClassifier(random_state=42))
+                ('classifier', LGBMClassifier(
+                    random_state=42,
+                    n_estimators=100,
+                    max_depth=5,
+                    learning_rate=0.1,
+                    num_leaves=31,
+                    n_jobs=-1
+                ))
             ])
-        }
+            self.support_model = Pipeline([
+                ('imputer', SimpleImputer(strategy='median')),
+                ('scaler', StandardScaler()),
+                ('regressor', RandomForestRegressor(
+                    random_state=42,
+                    n_estimators=50,
+                    max_depth=5,
+                    n_jobs=-1
+                ))
+            ])
+            self.resistance_model = Pipeline([
+                ('imputer', SimpleImputer(strategy='median')),
+                ('scaler', StandardScaler()),
+                ('regressor', RandomForestRegressor(
+                    random_state=42,
+                    n_estimators=50,
+                    max_depth=5,
+                    n_jobs=-1
+                ))
+            ])
+        else:
+            st.info("LightGBM unavailable. Using traditional analysis for recommendations. Install LightGBM with `pip install lightgbm`.")
+
         # Define numerical features for training
         self.numerical_features = [
-            'RSI_1Y', 'RSI_5Y', 'MACD_1Y', 'MACD_5Y',
-            'MA20', 'MA50', 'MA200', 'Momentum', 'Volatility',
-            'MA20_Cross_MA50', 'MA50_Cross_MA200', 'Volume_Ratio'
+            'RSI_1Y', 'RSI_5Y', 'MACD_1Y', 'MACD_5Y', 'SMA_44',
+            'Momentum', 'Volatility', 'MA20_Cross_SMA44', 'Volume_Ratio'
         ]
 
     def initialize_models(self, stock_data, symbol):
@@ -72,10 +112,21 @@ class AIPortfolioAnalyzer:
             if len(X_train) == 0 or len(y_train) == 0:
                 st.warning(f"Not enough training data for {symbol}")
                 return False
-            imputer = SimpleImputer(strategy='median')
-            X_train_imputed = imputer.fit_transform(X_train)
-            for name, model in self.models.items():
-                model.fit(X_train_imputed, y_train)
+            if LIGHTGBM_AVAILABLE and self.model:
+                self.model.fit(X_train, y_train)
+                self.model_fitted = True
+            if LIGHTGBM_AVAILABLE and self.support_model and self.resistance_model:
+                X_support_resistance, y_support, y_resistance = self.create_support_resistance_data(stock_data, symbol)
+                if len(X_support_resistance) > 0:
+                    self.support_model.fit(X_support_resistance, y_support)
+                    self.resistance_model.fit(X_support_resistance, y_resistance)
+                    self.support_model_fitted = True
+                    self.resistance_model_fitted = True
+                    print(f"Support and resistance models trained successfully for {symbol}")
+                else:
+                    st.warning(f"Insufficient data to train support/resistance models for {symbol}")
+                    self.support_model_fitted = False
+                    self.resistance_model_fitted = False
             return True
         except Exception as e:
             st.warning(f"Error initializing models for {symbol}: {str(e)}")
@@ -83,239 +134,143 @@ class AIPortfolioAnalyzer:
 
     def _calculate_rsi(self, prices, timeframe):
         """
-        Calculate RSI with different periods based on timeframe
+        Calculate RSI with optimized periods based on timeframe
         """
         try:
-            # Define periods based on timeframe
-            if timeframe == "1y":
-                period = 14  # Standard 14-day RSI for 1 year
-            elif timeframe == "5y":
-                period = 50  # Longer period for 5 year analysis
-            else:
-                period = 14  # Default to standard period
-
-            # Calculate price changes
+            period = 14 if timeframe == "1y" else 50 if timeframe == "5y" else 14
             delta = prices.diff()
-
-            # Separate gains and losses
-            gains = delta.copy()
-            losses = delta.copy()
-            gains[gains < 0] = 0
-            losses[losses > 0] = 0
-            losses = abs(losses)
-
-            # Calculate rolling averages
-            avg_gain = gains.rolling(window=period).mean()
-            avg_loss = losses.rolling(window=period).mean()
-
-            # Calculate RS and RSI
-            rs = avg_gain / avg_loss
+            gains = delta.where(delta > 0, 0)
+            losses = -delta.where(delta < 0, 0)
+            avg_gain = gains.rolling(window=period, min_periods=1).mean()
+            avg_loss = losses.rolling(window=period, min_periods=1).mean()
+            rs = avg_gain / avg_loss.replace(0, np.nan)
             rsi = 100 - (100 / (1 + rs))
-
-            # Get the latest RSI value
             current_rsi = rsi.iloc[-1]
-
-            # Generate signals
             signals = []
             if not np.isnan(current_rsi):
                 if current_rsi < 30:
                     signals.append(f"{timeframe}_RSI_Oversold")
                 elif current_rsi > 70:
                     signals.append(f"{timeframe}_RSI_Overbought")
-
             return float(current_rsi) if not np.isnan(current_rsi) else 50.0, signals
-
         except Exception as e:
             print(f"Error in RSI calculation ({timeframe}): {str(e)}")
             return 50.0, []
 
     def _calculate_macd(self, prices, timeframe):
         """
-        Calculate MACD with different periods based on timeframe
+        Calculate MACD with optimized periods
         """
         try:
-            if timeframe == "1y":
-                # Standard MACD parameters for 1 year
-                fast_period = 12
-                slow_period = 26
-                signal_period = 9
-            elif timeframe == "5y":
-                # Longer periods for 5 year analysis
-                fast_period = 24
-                slow_period = 52
-                signal_period = 18
-            else:
-                # Default parameters
-                fast_period = 12
-                slow_period = 26
-                signal_period = 9
-
-            # Calculate EMAs
+            fast_period = 12 if timeframe == "1y" else 24 if timeframe == "5y" else 12
+            slow_period = 26 if timeframe == "1y" else 52 if timeframe == "5y" else 26
+            signal_period = 9 if timeframe == "1y" else 18 if timeframe == "5y" else 9
             exp1 = prices.ewm(span=fast_period, adjust=False).mean()
             exp2 = prices.ewm(span=slow_period, adjust=False).mean()
-
-            # Calculate MACD line
             macd_line = exp1 - exp2
-
-            # Calculate signal line
             signal_line = macd_line.ewm(span=signal_period, adjust=False).mean()
-
-            # Calculate MACD histogram
             macd_histogram = macd_line - signal_line
-
-            # Get the latest values
             current_macd = macd_histogram.iloc[-1]
-
-            # Generate signals
             signals = []
             if not np.isnan(current_macd):
                 if macd_line.iloc[-1] > signal_line.iloc[-1] and macd_line.iloc[-2] <= signal_line.iloc[-2]:
                     signals.append(f"{timeframe}_MACD_Crossover_Bullish")
                 elif macd_line.iloc[-1] < signal_line.iloc[-1] and macd_line.iloc[-2] >= signal_line.iloc[-2]:
                     signals.append(f"{timeframe}_MACD_Crossover_Bearish")
-
             return float(current_macd) if not np.isnan(current_macd) else 0.0, signals
-
         except Exception as e:
             print(f"Error in MACD calculation ({timeframe}): {str(e)}")
             return 0.0, []
 
-    def calculate_advanced_features(self, data, mode="REAL_TIME"):
-        """Calculate technical indicators and features for ML models"""
+    def _calculate_sma(self, prices, period=44):
+        """
+        Calculate Simple Moving Average
+        """
         try:
-            if data.empty:
+            sma = prices.rolling(window=period, min_periods=1).mean()
+            return float(sma.iloc[-1]) if not pd.isna(sma.iloc[-1]) else 0.0
+        except Exception as e:
+            print(f"Error in SMA calculation: {str(e)}")
+            return 0.0
+
+    def calculate_advanced_features(self, data, mode="REAL_TIME"):
+        """Calculate optimized technical indicators for ML models"""
+        try:
+            if data.empty or len(data) < 50:
                 return None
 
             features = {}
-
-            # Pre-initialize all features with 0.0 as float64
-            numerical_features = [
-                'RSI_1Y', 'RSI_5Y', 'MACD_1Y', 'MACD_5Y',
-                'MA20', 'MA50', 'MA200', 'Momentum', 'Volatility',
-                'MA20_Cross_MA50', 'MA50_Cross_MA200', 'Volume_Ratio'
-            ]
-
-            # Initialize all features with scalar values
+            numerical_features = self.numerical_features
             for feature in numerical_features:
                 features[feature] = np.float64(0.0)
 
             close_prices = data['Close'].astype(np.float64)
+            volume = data['Volume'].astype(np.float64) if 'Volume' in data.columns else pd.Series(np.zeros(len(data)), index=data.index)
 
             # RSI Calculations
-            try:
-                rsi_1y_value, rsi_1y_signals = self._calculate_rsi(close_prices, timeframe="1y")
-                rsi_5y_value, rsi_5y_signals = self._calculate_rsi(close_prices, timeframe="5y")
-
-                # Ensure scalar values
-                features['RSI_1Y'] = np.float64(rsi_1y_value if np.isscalar(rsi_1y_value) else 0.0)
-                features['RSI_5Y'] = np.float64(rsi_5y_value if np.isscalar(rsi_5y_value) else 0.0)
-            except Exception as e:
-                print(f"RSI calculation error: {e}")
+            rsi_1y_value, rsi_1y_signals = self._calculate_rsi(close_prices, timeframe="1y")
+            rsi_5y_value, rsi_5y_signals = self._calculate_rsi(close_prices, timeframe="5y")
+            features['RSI_1Y'] = np.float64(rsi_1y_value)
+            features['RSI_5Y'] = np.float64(rsi_5y_value)
 
             # MACD Calculations
-            try:
-                macd_1y_value, macd_1y_signals = self._calculate_macd(close_prices, timeframe="1y")
-                macd_5y_value, macd_5y_signals = self._calculate_macd(close_prices, timeframe="5y")
+            macd_1y_value, macd_1y_signals = self._calculate_macd(close_prices, timeframe="1y")
+            macd_5y_value, macd_5y_signals = self._calculate_macd(close_prices, timeframe="5y")
+            features['MACD_1Y'] = np.float64(macd_1y_value)
+            features['MACD_5Y'] = np.float64(macd_5y_value)
 
-                # Ensure scalar values
-                features['MACD_1Y'] = np.float64(macd_1y_value if np.isscalar(macd_1y_value) else 0.0)
-                features['MACD_5Y'] = np.float64(macd_5y_value if np.isscalar(macd_5y_value) else 0.0)
-            except Exception as e:
-                print(f"MACD calculation error: {e}")
-
-            # Moving Averages
-            try:
-                ma20 = close_prices.rolling(window=20).mean().iloc[-1]
-                ma50 = close_prices.rolling(window=50).mean().iloc[-1]
-                ma200 = close_prices.rolling(window=200).mean().iloc[-1]
-
-                features['MA20'] = np.float64(ma20 if not pd.isna(ma20) else 0.0)
-                features['MA50'] = np.float64(ma50 if not pd.isna(ma50) else 0.0)
-                features['MA200'] = np.float64(ma200 if not pd.isna(ma200) else 0.0)
-            except Exception as e:
-                print(f"Moving averages calculation error: {e}")
+            # SMA 44
+            sma_44 = self._calculate_sma(close_prices, period=44)
+            ma_20 = self._calculate_sma(close_prices, period=20)
+            features['SMA_44'] = np.float64(sma_44)
 
             # Momentum
-            try:
-                current_price = close_prices.iloc[-1]
-                price_5_days_ago = close_prices.iloc[-6] if len(close_prices) > 5 else close_prices.iloc[0]
-                momentum = ((current_price - price_5_days_ago) / price_5_days_ago) * 100
-                features['Momentum'] = np.float64(momentum if not pd.isna(momentum) else 0.0)
-            except Exception as e:
-                print(f"Momentum calculation error: {e}")
+            current_price = close_prices.iloc[-1]
+            price_5_days_ago = close_prices.iloc[-6] if len(close_prices) > 5 else close_prices.iloc[0]
+            momentum = ((current_price - price_5_days_ago) / price_5_days_ago) * 100
+            features['Momentum'] = np.float64(momentum if not pd.isna(momentum) else 0.0)
 
             # Volatility
-            try:
-                returns = close_prices.pct_change()
-                volatility = returns.std() * np.sqrt(252)
-                features['Volatility'] = np.float64(volatility if not pd.isna(volatility) else 0.0)
-            except Exception as e:
-                print(f"Volatility calculation error: {e}")
+            returns = close_prices.pct_change()
+            volatility = returns.std() * np.sqrt(252)
+            features['Volatility'] = np.float64(volatility if not pd.isna(volatility) else 0.0)
 
-            # Moving Average Crossovers
-            try:
-                features['MA20_Cross_MA50'] = np.float64(1.0 if features['MA20'] > features['MA50'] else 0.0)
-                features['MA50_Cross_MA200'] = np.float64(1.0 if features['MA50'] > features['MA200'] else 0.0)
-            except Exception as e:
-                print(f"MA crossover calculation error: {e}")
+            # Moving Average Crossover
+            features['MA20_Cross_SMA44'] = np.float64(1.0 if ma_20 > sma_44 else 0.0)
 
             # Volume Ratio
-            try:
-                if 'Volume' in data.columns:
-                    avg_volume = data['Volume'].rolling(window=20).mean().iloc[-1]
-                    current_volume = data['Volume'].iloc[-1]
-                    features['Volume_Ratio'] = np.float64(current_volume / avg_volume if avg_volume != 0 else 1.0)
-            except Exception as e:
-                print(f"Volume ratio calculation error: {e}")
+            avg_volume = volume.rolling(window=20, min_periods=1).mean().iloc[-1]
+            current_volume = volume.iloc[-1]
+            features['Volume_Ratio'] = np.float64(current_volume / avg_volume if avg_volume != 0 else 1.0)
 
-            # Collect signals in a separate list
-            signals = []
-            if 'rsi_1y_signals' in locals(): signals.extend(rsi_1y_signals)
-            if 'rsi_5y_signals' in locals(): signals.extend(rsi_5y_signals)
-            if 'macd_1y_signals' in locals(): signals.extend(macd_1y_signals)
-            if 'macd_5y_signals' in locals(): signals.extend(macd_5y_signals)
-
-            # Store signals separately
+            # Collect signals
+            signals = rsi_1y_signals + rsi_5y_signals + macd_1y_signals + macd_5y_signals
             features['Signals'] = signals
 
-            # Final validation to ensure all numerical features are scalar float64
-            for key in numerical_features:
-                if not np.isscalar(features[key]):
-                    features[key] = np.float64(0.0)
-                features[key] = np.float64(features[key])
-
             return features
-
         except Exception as e:
             print(f"Error calculating features: {str(e)}")
             return None
 
     def create_training_data(self, stock_data, symbol):
-        """Create training data for ML models based on historical patterns"""
+        """Create optimized training data for ML models (EXCLUDES portfolio-specific fields)"""
         try:
             features_list = []
             labels_list = []
             for i in range(44, len(stock_data) - 5):
                 current_data = stock_data.iloc[:i + 1]
-                features = self.calculate_advanced_features(current_data, symbol)
+                features = self.calculate_advanced_features(current_data)
                 if not features:
                     continue
 
-                # Select only numerical features for training
+                # Only include technical features (EXCLUDE portfolio-specific fields)
                 feature_values = [features.get(key, 0.0) for key in self.numerical_features]
-
-                # Validate that all feature values are scalars
-                if any(not np.isscalar(val) for val in feature_values):
-                    print(f"Non-scalar feature detected for {symbol} at index {i}: {feature_values}")
-                    continue
-
-                # Ensure all values are float64 and handle NaN/inf
                 feature_values = [np.float64(val) if not pd.isna(val) and not np.isinf(val) else 0.0 for val in
                                   feature_values]
-
-                if all(val == 0.0 for val in feature_values):  # Skip if all features are zero
+                if all(val == 0.0 for val in feature_values):
                     continue
 
+                # Determine label based on price movement only
                 current_price = stock_data['Close'].iloc[i]
                 future_price = stock_data['Close'].iloc[i + 5]
                 if pd.isna(current_price) or pd.isna(future_price):
@@ -327,6 +282,7 @@ class AIPortfolioAnalyzer:
                     label = 2  # BUY
                 else:
                     label = 1  # HOLD
+
                 features_list.append(feature_values)
                 labels_list.append(label)
 
@@ -334,60 +290,125 @@ class AIPortfolioAnalyzer:
                 print(f"No valid features for {symbol}")
                 return np.array([]), np.array([])
 
-            # Convert to NumPy arrays
             X = np.array(features_list, dtype=np.float64)
             y = np.array(labels_list, dtype=np.int32)
-
             print(f"Training data shape for {symbol}: {X.shape}")
             return X, y
-
         except Exception as e:
             st.warning(f"Error creating training data for {symbol}: {str(e)}")
             return np.array([]), np.array([])
 
+    def create_support_resistance_data(self, stock_data, symbol):
+        """Create training data for support and resistance prediction"""
+        try:
+            features_list = []
+            support_list = []
+            resistance_list = []
+            lookback = 20
+
+            for i in range(lookback, len(stock_data)):
+                current_data = stock_data.iloc[:i + 1]
+                features = self.calculate_advanced_features(current_data)
+                if not features:
+                    continue
+
+                feature_values = [features.get(key, 0.0) for key in self.numerical_features]
+                feature_values = [np.float64(val) if not pd.isna(val) and not np.isinf(val) else 0.0 for val in feature_values]
+                if all(val == 0.0 for val in feature_values):
+                    continue
+
+                recent_data = stock_data.iloc[i - lookback:i]
+                pivot_high = recent_data['High'].max()
+                pivot_low = recent_data['Low'].min()
+                support_level = pivot_low
+                resistance_level = pivot_high
+
+                if pd.isna(support_level) or pd.isna(resistance_level):
+                    continue
+
+                current_price = stock_data['Close'].iloc[i]
+                if support_level > current_price * 0.7 and resistance_level < current_price * 1.3:
+                    features_list.append(feature_values)
+                    support_list.append(support_level)
+                    resistance_list.append(resistance_level)
+
+            if not features_list:
+                print(f"No valid support/resistance data for {symbol}")
+                return np.array([]), np.array([]), np.array([])
+
+            X = np.array(features_list, dtype=np.float64)
+            y_support = np.array(support_list, dtype=np.float64)
+            y_resistance = np.array(resistance_list, dtype=np.float64)
+            print(f"Support/resistance training data shape for {symbol}: {X.shape}")
+            return X, y_support, y_resistance
+        except Exception as e:
+            print(f"Error creating support/resistance data for {symbol}: {str(e)}")
+            return np.array([]), np.array([]), np.array([])
+
     def train_ensemble_models(self, features_data, labels_data):
-        """Train ensemble of ML models"""
+        """Train the LightGBM model"""
         if len(features_data) == 0 or len(labels_data) == 0:
             return False
         try:
-            for name, model in self.models.items():
-                model.fit(features_data, labels_data)
-            return True
+            if LIGHTGBM_AVAILABLE and self.model:
+                self.model.fit(features_data, labels_data)
+                self.model_fitted = True
+                return True
+            return False
         except Exception as e:
-            st.warning(f"Error training models: {str(e)}")
+            st.warning(f"Error training model: {str(e)}")
             return False
 
     def get_ai_recommendation(self, features):
-        """Get AI-powered recommendation using ensemble of models"""
+        """Get AI-powered recommendation (EXCLUDES portfolio-specific fields)"""
         try:
             if not features or not all(key in features for key in self.numerical_features):
                 return "HOLD", "Insufficient data for AI analysis", 0.33
 
-            # Prepare feature array with only numerical features
+            # Use only technical features for prediction
             feature_array = np.array([[features.get(key, 0.0) for key in self.numerical_features]], dtype=np.float64)
 
-            predictions = {}
-            probabilities = {}
-            for name, model in self.models.items():
-                try:
-                    pred = model.predict(feature_array)[0]
-                    prob = model.predict_proba(feature_array)[0]
-                    predictions[name] = pred
-                    probabilities[name] = prob
-                except Exception as e:
-                    print(f"Error in model {name} prediction: {str(e)}")
-                    predictions[name] = 1  # Default to HOLD
-                    probabilities[name] = [0.33, 0.34, 0.33]
-
-            ensemble_prob = np.mean(list(probabilities.values()), axis=0)
-            ensemble_pred = np.argmax(ensemble_prob)
-            confidence = np.max(ensemble_prob)
-            recommendation_map = {0: "SELL", 1: "HOLD", 2: "BUY"}
-            recommendation = recommendation_map[ensemble_pred]
-            reason = self._generate_ai_reason(features, recommendation, confidence, ensemble_prob)
-            return recommendation, reason, confidence
+            if LIGHTGBM_AVAILABLE and self.model and self.model_fitted:
+                pred = self.model.predict(feature_array)[0]
+                prob = self.model.predict_proba(feature_array)[0]
+                confidence = np.max(prob)
+                recommendation_map = {0: "SELL", 1: "HOLD", 2: "BUY"}
+                recommendation = recommendation_map[pred]
+                reason = self._generate_ai_reason(features, recommendation, confidence, prob)
+                return recommendation, reason, confidence
+            else:
+                return self._traditional_recommendation(features)
         except Exception as e:
             return "HOLD", f"AI analysis error: {str(e)}", 0.33
+
+    def _traditional_recommendation(self, features):
+        """Fallback to traditional analysis (EXCLUDES portfolio-specific fields)"""
+        reasons = []
+        rsi_1y = features.get('RSI_1Y', 50)
+        rsi_5y = features.get('RSI_5Y', 50)
+        macd_1y = features.get('MACD_1Y', 0)
+        sma_44 = features.get('SMA_44', 0)
+        current_price = features.get('Market_Price', 0)  # Renamed for clarity
+
+        if rsi_1y > 70 or rsi_5y > 70:
+            reasons.append("Overbought RSI")
+        elif rsi_1y < 30 or rsi_5y < 30:
+            reasons.append("Oversold RSI")
+        if macd_1y > 0:
+            reasons.append("Bullish MACD")
+        elif macd_1y < 0:
+            reasons.append("Bearish MACD")
+        if current_price > sma_44 * 1.05:
+            reasons.append("Price above SMA 44 (bullish)")
+        elif current_price < sma_44 * 0.95:
+            reasons.append("Price below SMA 44 (bearish)")
+
+        bullish_count = sum(1 for r in reasons if "bullish" in r.lower() or "oversold" in r.lower())
+        bearish_count = sum(1 for r in reasons if "bearish" in r.lower() or "overbought" in r.lower())
+        action = "BUY" if bullish_count >= 2 else "SELL" if bearish_count >= 2 else "HOLD"
+        reason = ", ".join(reasons) if reasons else "Neutral signals"
+        confidence = 0.6 if action != "HOLD" else 0.33
+        return action, reason, confidence
 
     def _generate_ai_reason(self, features, recommendation, confidence, probabilities):
         """Generate detailed AI reasoning"""
@@ -395,11 +416,9 @@ class AIPortfolioAnalyzer:
         rsi_1y = features.get('RSI_1Y', 50)
         rsi_5y = features.get('RSI_5Y', 50)
         macd_1y = features.get('MACD_1Y', 0)
-        macd_5y = features.get('MACD_5Y', 0)
-        ma20 = features.get('MA20', 0)
-        ma50 = features.get('MA50', 0)
+        sma_44 = features.get('SMA_44', 0)
+        current_price = features.get('Current_Price', 0)
 
-        # RSI analysis
         if rsi_1y > 70:
             reasons.append("Overbought conditions (RSI 1Y > 70)")
         elif rsi_1y < 30:
@@ -408,88 +427,71 @@ class AIPortfolioAnalyzer:
             reasons.append("Overbought conditions (RSI 5Y > 70)")
         elif rsi_5y < 30:
             reasons.append("Oversold conditions (RSI 5Y < 30)")
-
-        # MACD analysis
         if macd_1y > 0:
             reasons.append("Bullish MACD momentum (1Y)")
         elif macd_1y < 0:
             reasons.append("Bearish MACD momentum (1Y)")
-        if macd_5y > 0:
-            reasons.append("Bullish MACD momentum (5Y)")
-        elif macd_5y < 0:
-            reasons.append("Bearish MACD momentum (5Y)")
-
-        # Moving Average analysis
-        if ma20 > ma50:
-            reasons.append("Price above MA20/MA50 (bullish)")
-        elif ma20 < ma50:
-            reasons.append("Price below MA20/MA50 (bearish)")
+        if current_price > sma_44:
+            reasons.append("Price above SMA 44 (bullish)")
+        elif current_price < sma_44:
+            reasons.append("Price below SMA 44 (bearish)")
 
         buy_prob, hold_prob, sell_prob = probabilities[2], probabilities[1], probabilities[0]
         reason_text = f"AI Confidence: {confidence:.1%} | "
-        if reasons:
-            reason_text += ", ".join(reasons[:4])
-        else:
-            reason_text += "Neutral signals detected"
+        reason_text += ", ".join(reasons) if reasons else "Neutral signals detected"
         reason_text += f" (Buy:{buy_prob:.1%}, Hold:{hold_prob:.1%}, Sell:{sell_prob:.1%})"
         return reason_text
 
-    def _calculate_bollinger_bands(self, prices, period=20, std_dev=2):
-        """Calculate Bollinger Bands"""
-        sma = prices.rolling(period).mean()
-        std = prices.rolling(period).std()
-        upper_band = sma + (std * std_dev)
-        lower_band = sma - (std * std_dev)
-        return upper_band, sma, lower_band
-
-    def _calculate_stochastic(self, high, low, close, k_period=14, d_period=3):
-        """Calculate Stochastic Oscillator"""
-        lowest_low = low.rolling(k_period).min()
-        highest_high = high.rolling(k_period).max()
-        k_percent = 100 * ((close - lowest_low) / (highest_high - lowest_low))
-        d_percent = k_percent.rolling(d_period).mean()
-        return k_percent, d_percent
-
-    def _calculate_atr(self, high, low, close, period=14):
-        """Calculate Average True Range"""
-        tr1 = high - low
-        tr2 = abs(high - close.shift())
-        tr3 = abs(low - close.shift())
-        true_range = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-        return true_range.rolling(period).mean()
-
     def _calculate_support_resistance(self, data, lookback=20):
-        """Calculate the next support and resistance levels based on recent highs and lows"""
+        """Calculate support and resistance levels using Random Forest and pivot points"""
         try:
             if data.empty or len(data) < lookback:
-                return 0.0, 0.0
+                return np.float64(0.0), np.float64(0.0)
 
-            recent_data = data.tail(lookback)
             current_price = data['Close'].iloc[-1]
+            features = self.calculate_advanced_features(data)
+            if not features:
+                print("No valid features for support/resistance prediction")
+                return np.float64(current_price * 0.95), np.float64(current_price * 1.05)
 
-            # Calculate support (lowest low) and resistance (highest high)
-            support_level = recent_data['Low'].min()
-            resistance_level = recent_data['High'].max()
-
-            # Validate levels are within 20% of current price to ensure relevance
-            if not pd.isna(support_level) and support_level > current_price * 0.8:
-                support_level = np.float64(support_level)
+            if (LIGHTGBM_AVAILABLE and self.support_model and self.resistance_model and
+                    self.support_model_fitted and self.resistance_model_fitted):
+                feature_array = np.array([[features.get(key, 0.0) for key in self.numerical_features]], dtype=np.float64)
+                try:
+                    support_level = self.support_model.predict(feature_array)[0]
+                    resistance_level = self.resistance_model.predict(feature_array)[0]
+                except Exception as e:
+                    print(f"Error in model prediction: {str(e)}")
+                    recent_data = data.tail(lookback)
+                    pivot_high = recent_data['High'].max()
+                    pivot_low = recent_data['Low'].min()
+                    support_level = pivot_low
+                    resistance_level = pivot_high
+                    st.warning("AI-based support/resistance prediction failed, using pivot point method")
             else:
-                support_level = np.float64(current_price)
+                recent_data = data.tail(lookback)
+                pivot_high = recent_data['High'].max()
+                pivot_low = recent_data['Low'].min()
+                support_level = pivot_low
+                resistance_level = pivot_high
+                print("Using pivot point method for support/resistance")
 
-            if not pd.isna(resistance_level) and resistance_level < current_price * 1.2:
-                resistance_level = np.float64(resistance_level)
-            else:
-                resistance_level = np.float64(current_price)
+            support_level = np.float64(support_level) if not pd.isna(support_level) else np.float64(current_price * 0.95)
+            resistance_level = np.float64(resistance_level) if not pd.isna(resistance_level) else np.float64(current_price * 1.05)
+
+            if not (support_level < current_price < resistance_level):
+                support_level = np.float64(current_price * 0.95)
+                resistance_level = np.float64(current_price * 1.05)
 
             return support_level, resistance_level
-
         except Exception as e:
             print(f"Error calculating support/resistance: {str(e)}")
-            return np.float64(0.0), np.float64(0.0)
-
+            return np.float64(current_price * 0.95), np.float64(current_price * 1.05)
 
 def main():
+    if not LIGHTGBM_AVAILABLE:
+        st.info("LightGBM unavailable. Using traditional analysis for recommendations. Install LightGBM with `pip install lightgbm`.")
+
     st.markdown("""
     <style>
     .main-header {
@@ -546,7 +548,6 @@ def main():
     portfolio_analyzer = PortfolioAnalyzer()
     analyze_portfolio(portfolio_analyzer)
 
-
 def analyze_portfolio(portfolio_analyzer):
     """Portfolio analysis functionality"""
     st.markdown('<div class="upload-section">', unsafe_allow_html=True)
@@ -557,40 +558,77 @@ def analyze_portfolio(portfolio_analyzer):
         uploaded_file = st.file_uploader(
             "Choose your portfolio CSV file",
             type=['csv'],
-            help="CSV should contain columns: Symbol, Quantity, Buy_Price, Buy_Date",
+            help="CSV should contain columns: Symbol, Quantity, Buy_Price, Buy_Date, and optionally Exchange",
             label_visibility="collapsed"
         )
     with col2:
         st.markdown("### 📋 Required Format")
         st.markdown("""
         **Columns needed:**
-        - **Symbol**: NSE stock symbol (e.g., RELIANCE)
+        - **Symbol**: Stock symbol (e.g., RELIANCE, AAPL)
         - **Quantity**: Number of shares
         - **Buy_Price**: Purchase price per share
         - **Buy_Date**: Date of purchase (YYYY-MM-DD)
+        - **Exchange** (optional): Exchange code (e.g., NSE, BSE, NASDAQ). Defaults to NSE if not provided
         """)
     st.markdown('</div>', unsafe_allow_html=True)
     with st.expander("💡 See Sample CSV Format", expanded=False):
         sample_data = {
-            'Symbol': ['RELIANCE', 'TCS', 'INFY', 'HDFCBANK'],
+            'Symbol': ['RELIANCE', 'TCS', 'INFY', 'AAPL'],
             'Quantity': [10, 25, 50, 15],
-            'Buy_Price': [2150.00, 3200.00, 1450.00, 1650.00],
-            'Buy_Date': ['2023-01-15', '2023-03-20', '2023-06-10', '2023-08-05']
+            'Buy_Price': [2150.00, 3200.00, 1450.00, 150.00],
+            'Buy_Date': ['2023-01-15', '2023-03-20', '2023-06-10', '2023-08-05'],
+            'Exchange': ['NSE', 'NSE', 'BSE', 'NASDAQ']
         }
         st.dataframe(pd.DataFrame(sample_data), use_container_width=True)
-        st.info("💡 Tip: Save your data in this exact format as a CSV file for best results.")
+        st.info("💡 Tip: Save your data in this exact format as a CSV file for best results. Exchange column is optional.")
     if uploaded_file is not None:
         try:
-            df = pd.read_csv(uploaded_file)
+            # Read CSV with UTF-8-SIG to handle BOM
+            df = pd.read_csv(uploaded_file, encoding='utf-8-sig')
+            # Normalize column names: strip whitespace, convert to title case
+            df.columns = [col.strip().title() for col in df.columns]
             st.success("✅ CSV file uploaded successfully!")
+            print("Detected columns:", df.columns.tolist())  # Debug output
+            # Validate CSV format with required columns
+            required_columns = ['Symbol', 'Quantity', 'Buy_Price', 'Buy_Date']
+            missing_columns = [col for col in required_columns if col not in df.columns]
+            if missing_columns:
+                st.error(f"❌ Missing required columns: {', '.join(missing_columns)}")
+                st.stop()
+            # Add Exchange column with default 'NSE' if not present
+            if 'Exchange' not in df.columns:
+                df['Exchange'] = 'NSE'
+                st.info("ℹ️ Exchange column not found in CSV. Defaulting to NSE for all stocks.")
+            else:
+                # Validate Exchange values
+                valid_exchanges = ['NSE', 'BSE', 'NASDAQ']
+                invalid_exchanges = df['Exchange'].dropna().apply(
+                    lambda x: x if isinstance(x, str) and x.strip().upper() in valid_exchanges else None
+                ).isna()
+                if invalid_exchanges.any():
+                    st.error(f"❌ Invalid exchange values found: {df[invalid_exchanges]['Exchange'].unique()}. Supported exchanges: {', '.join(valid_exchanges)}")
+                    st.stop()
+                df['Exchange'] = df['Exchange'].fillna('NSE')  # Default for NaN values
+            # Pass the full DataFrame to validate_csv_format
             is_valid, result = portfolio_analyzer.validate_csv_format(df)
             if not is_valid:
                 st.error(f"❌ {result}")
                 st.stop()
             df = result
             with st.spinner("🔄 Fetching live prices and calculating metrics..."):
-                symbols = df['Symbol'].unique().tolist()
-                current_prices = portfolio_analyzer.get_current_prices(symbols)
+                # Group by Symbol and Exchange to handle unique combinations
+                symbol_exchange_pairs = df[['Symbol', 'Exchange']].drop_duplicates().to_dict('records')
+                current_prices = {}
+                for pair in symbol_exchange_pairs:
+                    symbol = pair['Symbol']
+                    exchange = pair['Exchange']
+                    try:
+                        price = portfolio_analyzer.get_current_prices([symbol], exchange=exchange)
+                        current_prices[symbol] = price.get(symbol, np.nan)
+                    except Exception as e:
+                        st.warning(f"Error fetching price for {symbol} on {exchange}: {str(e)}")
+                        current_prices[symbol] = np.nan
                 portfolio_df = portfolio_analyzer.calculate_portfolio_metrics(df, current_prices)
                 summary = portfolio_analyzer.generate_portfolio_summary(portfolio_df)
             st.markdown("---")
@@ -629,25 +667,24 @@ def analyze_portfolio(portfolio_analyzer):
                     help="Extended Internal Rate of Return (annualized)" if xirr_display != "N/A" else "XIRR calculation failed due to insufficient data or invalid cash flows"
                 )
                 if xirr_display == "N/A":
-                    st.warning(
-                        "⚠️ XIRR calculation failed. Ensure buy dates and prices are valid and include sufficient transaction history.")
+                    st.warning("⚠️ XIRR calculation failed. Ensure buy dates and prices are valid and include sufficient transaction history.")
             st.markdown("---")
             st.markdown("### 📋 Detailed Holdings & Investment Analysis")
             recommendations = {}
             technical_data = {}
             ai_analyzer = AIPortfolioAnalyzer()
-            # Initialize model_trained to False before the loop
             model_trained = False
             with st.spinner("🤖 Training AI models and analyzing technical indicators..."):
                 all_training_features = []
                 all_training_labels = []
                 valid_symbols = []
 
-                for symbol in symbols:
-                    # Fetch Stock info for processing
+                for _, pair in enumerate(symbol_exchange_pairs):
+                    symbol = pair['Symbol']
+                    exchange = pair['Exchange']
                     try:
-                        stock_data = portfolio_analyzer.data_fetcher.get_stock_data(symbol, "NSE", "5y")
-                        stock_data_1y = portfolio_analyzer.data_fetcher.get_stock_data(symbol, "NSE", "1y")
+                        stock_data = portfolio_analyzer.data_fetcher.get_stock_data(symbol, exchange, "5y")
+                        stock_data_1y = portfolio_analyzer.data_fetcher.get_stock_data(symbol, exchange, "1y")
                         if stock_data is not None and not stock_data.empty:
                             try:
                                 rsi_5y = portfolio_analyzer.tech_indicators.calculate_rsi(stock_data['Close'])
@@ -655,15 +692,21 @@ def analyze_portfolio(portfolio_analyzer):
                                 rsi_1y = portfolio_analyzer.tech_indicators.calculate_rsi(stock_data_1y['Close'])
                                 macd_data_1y = portfolio_analyzer.tech_indicators.calculate_macd(stock_data_1y['Close'])
                                 sma_44 = stock_data['Close'].rolling(44).mean()
-                                info = portfolio_analyzer.data_fetcher.get_stock_info(symbol, "NSE")
+                                info = portfolio_analyzer.data_fetcher.get_stock_info(symbol, exchange)
+                                current_price = stock_data['Close'].iloc[-1]
+                                ai_analyzer.initialize_models(stock_data, symbol)
                                 support_level, resistance_level = ai_analyzer._calculate_support_resistance(stock_data)
                             except Exception as e:
-                                st.warning(f"Error in fetching Stock INFO {symbol}: {str(e)}")
-                                support_level, resistance_level = 0.0, 0.0
+                                st.warning(f"Error in fetching Stock INFO for {symbol} on {exchange}: {str(e)}")
+                                support_level, resistance_level = current_price * 0.95, current_price * 1.05
 
                             if model_trained:
                                 features = ai_analyzer.calculate_advanced_features(stock_data)
                                 if features:
+                                    # Use Market_Price instead of Current_Price for clarity
+                                    features['Market_Price'] = current_price
+
+                                    # Get recommendation using ONLY technical features
                                     ai_recommendation, ai_reason, confidence = ai_analyzer.get_ai_recommendation(features)
                                     recommendations[symbol] = {'action': ai_recommendation, 'reason': ai_reason}
                                 else:
@@ -674,68 +717,32 @@ def analyze_portfolio(portfolio_analyzer):
                                     pb_ratio = info.get('priceToBook', np.nan)
                                     current_price = stock_data['Close'].iloc[-1]
                                     current_sma44 = sma_44.iloc[-1] if not sma_44.empty else current_price
-                                    action = "HOLD"
-                                    reasons = []
-                                    if current_price > current_sma44 * 1.05:
-                                        reasons.append("Price above 44 SMA (bullish)")
-                                    elif current_price < current_sma44 * 0.95:
-                                        reasons.append("Price below 44 SMA (bearish)")
-                                    if not pd.isna(pe_ratio):
-                                        if pe_ratio < 15:
-                                            reasons.append("Low P/E ratio (undervalued)")
-                                        elif pe_ratio > 30:
-                                            reasons.append("High P/E ratio (overvalued)")
-                                    if not pd.isna(pb_ratio):
-                                        if pb_ratio < 1:
-                                            reasons.append("Low P/B ratio (undervalued)")
-                                        elif pb_ratio > 3:
-                                            reasons.append("High P/B ratio (overvalued)")
-                                    if rsi_5y.iloc[-1] > 70:
-                                        reasons.append("Overbought (RSI 5Y > 70)")
-                                    elif rsi_5y.iloc[-1] < 30:
-                                        reasons.append("Oversold (RSI 5Y < 30)")
-                                    if rsi_1y.iloc[-1] > 70:
-                                        reasons.append("Overbought (RSI 1Y > 70)")
-                                    elif rsi_1y.iloc[-1] < 30:
-                                        reasons.append("Oversold (RSI 1Y < 30)")
-                                    if macd_data_5y['MACD'].iloc[-1] > macd_data_5y['Signal'].iloc[-1]:
-                                        reasons.append("Bullish MACD crossover (5Y)")
-                                    elif macd_data_5y['MACD'].iloc[-1] < macd_data_5y['Signal'].iloc[-1]:
-                                        reasons.append("Bearish MACD crossover (5Y)")
-                                    if macd_data_1y['MACD'].iloc[-1] > macd_data_1y['Signal'].iloc[-1]:
-                                        reasons.append("Bullish MACD crossover (1Y)")
-                                    elif macd_data_1y['MACD'].iloc[-1] < macd_data_1y['Signal'].iloc[-1]:
-                                        reasons.append("Bearish MACD crossover (1Y)")
-                                    if sum(1 for r in reasons if "bullish" in r.lower() or "undervalued" in r.lower()) >= 3:
-                                        action = "BUY"
-                                    elif sum(1 for r in reasons if "bearish" in r.lower() or "overvalued" in r.lower()) >= 3:
-                                        action = "SELL"
-                                    reason = ", ".join(reasons) if reasons else "Neutral signals"
+                                    features = {
+                                        'RSI_1Y': rsi_1y.iloc[-1] if not rsi_1y.empty else 50,
+                                        'RSI_5Y': rsi_5y.iloc[-1] if not rsi_5y.empty else 50,
+                                        'MACD_1Y': macd_data_1y['MACD'].iloc[-1] if not macd_data_1y['MACD'].empty else 0,
+                                        'SMA_44': current_sma44,
+                                        'Current_Price': current_price
+                                    }
+                                    action, reason, confidence = ai_analyzer._traditional_recommendation(features)
                                     recommendations[symbol] = {'action': action, 'reason': reason}
                                 except Exception as e:
-                                    st.warning(f"Error in traditional analysis for {symbol}: {str(e)}")
+                                    st.warning(f"Error in traditional analysis for {symbol} on {exchange}: {str(e)}")
                                     recommendations[symbol] = {'action': 'HOLD', 'reason': 'Analysis failed due to data issues'}
                             try:
-                                current_rsi_5y = rsi_5y.iloc[-1] if not rsi_5y.empty else 0
-                                current_macd_5y = macd_data_5y['MACD'].iloc[-1] if not macd_data_5y['MACD'].empty else 0
-                                current_rsi_1y = rsi_1y.iloc[-1] if not rsi_1y.empty else 0
-                                current_macd_1y = macd_data_1y['MACD'].iloc[-1] if not macd_data_1y['MACD'].empty else 0
-                                current_sma44 = sma_44.iloc[-1] if not sma_44.empty else 0
-                                pe_ratio = info.get('trailingPE', 0)
-                                pb_ratio = info.get('priceToBook', 0)
                                 technical_data[symbol] = {
-                                    'RSI_5Y': current_rsi_5y,
-                                    'MACD_5Y': current_macd_5y,
-                                    'RSI_1Y': current_rsi_1y,
-                                    'MACD_1Y': current_macd_1y,
-                                    'SMA_44': current_sma44,
-                                    'PE_Ratio': pe_ratio,
-                                    'PB_Ratio': pb_ratio,
+                                    'RSI_5Y': rsi_5y.iloc[-1] if not rsi_5y.empty else 0,
+                                    'MACD_5Y': macd_data_5y['MACD'].iloc[-1] if not macd_data_5y['MACD'].empty else 0,
+                                    'RSI_1Y': rsi_1y.iloc[-1] if not rsi_1y.empty else 0,
+                                    'MACD_1Y': macd_data_1y['MACD'].iloc[-1] if not macd_data_1y['MACD'].empty else 0,
+                                    'SMA_44': sma_44.iloc[-1] if not sma_44.empty else 0,
+                                    'PE_Ratio': info.get('trailingPE', 0),
+                                    'PB_Ratio': info.get('priceToBook', 0),
                                     'Support_Level': support_level,
                                     'Resistance_Level': resistance_level
                                 }
                             except Exception as e:
-                                st.warning(f"Error calculating indicators for {symbol}: {str(e)}")
+                                st.warning(f"Error calculating indicators for {symbol} on {exchange}: {str(e)}")
                                 technical_data[symbol] = {
                                     'RSI_5Y': 0,
                                     'MACD_5Y': 0,
@@ -761,7 +768,7 @@ def analyze_portfolio(portfolio_analyzer):
                                 'Resistance_Level': 0.0
                             }
                     except (ValueError, KeyError, urllib.error.URLError) as e:
-                        st.warning(f"Error processing data for {symbol}: {str(e)}")
+                        st.warning(f"Error processing data for {symbol} on {exchange}: {str(e)}")
                         recommendations[symbol] = {'action': 'HOLD', 'reason': f'Error fetching data: {str(e)}'}
                         technical_data[symbol] = {
                             'RSI_5Y': 0,
@@ -775,11 +782,11 @@ def analyze_portfolio(portfolio_analyzer):
                             'Resistance_Level': 0.0
                         }
 
-                # Train AI models after collecting data for all symbols
-                for symbol in symbols:
+                for _, pair in enumerate(symbol_exchange_pairs):
+                    symbol = pair['Symbol']
+                    exchange = pair['Exchange']
                     try:
-                        stock_data = portfolio_analyzer.data_fetcher.get_stock_data(symbol, "NSE", "5y")
-                        stock_data_1y = portfolio_analyzer.data_fetcher.get_stock_data(symbol, "NSE", "1y")
+                        stock_data = portfolio_analyzer.data_fetcher.get_stock_data(symbol, exchange, "5y")
                         if stock_data is not None and not stock_data.empty and len(stock_data) > 50:
                             features, labels = ai_analyzer.create_training_data(stock_data, symbol)
                             if len(features) > 0:
@@ -787,23 +794,22 @@ def analyze_portfolio(portfolio_analyzer):
                                 all_training_labels.extend(labels)
                                 valid_symbols.append(symbol)
                     except (ValueError, KeyError, urllib.error.URLError) as e:
-                        st.warning(f"Skipping training for {symbol}: {str(e)}")
+                        st.warning(f"Skipping training for {symbol} on {exchange}: {str(e)}")
 
-                # Train the models only if sufficient data is available
                 if len(all_training_features) > 100 and valid_symbols:
                     model_trained = ai_analyzer.train_ensemble_models(
                         np.array(all_training_features),
                         np.array(all_training_labels)
                     )
                     if model_trained:
-                        st.success("✅ AI models trained successfully with ensemble learning!")
-                        # Recompute AI recommendations for valid symbols
+                        st.success("✅ AI models trained successfully with LightGBM!")
                         for symbol in valid_symbols:
                             try:
-                                stock_data = portfolio_analyzer.data_fetcher.get_stock_data(symbol, "NSE", "5y")
+                                stock_data = portfolio_analyzer.data_fetcher.get_stock_data(symbol, df[df['Symbol'] == symbol]['Exchange'].iloc[0], "5y")
                                 if stock_data is not None and not stock_data.empty:
                                     features = ai_analyzer.calculate_advanced_features(stock_data)
                                     if features:
+                                        features['Current_Price'] = stock_data['Close'].iloc[-1]
                                         ai_recommendation, ai_reason, confidence = ai_analyzer.get_ai_recommendation(features)
                                         recommendations[symbol] = {'action': ai_recommendation, 'reason': ai_reason}
                                     else:
@@ -843,6 +849,9 @@ def analyze_portfolio(portfolio_analyzer):
             )
             portfolio_display['Resistance_Level'] = portfolio_display['Symbol'].map(
                 lambda x: technical_data.get(x, {}).get('Resistance_Level', 0)
+            )
+            portfolio_display['Exchange'] = portfolio_display['Symbol'].map(
+                lambda x: df[df['Symbol'] == x]['Exchange'].iloc[0]
             )
 
             def style_recommendation(val):
@@ -885,6 +894,7 @@ def analyze_portfolio(portfolio_analyzer):
             table_sorted = table_data.sort_values(by='PnL_Percentage', ascending=False)
             column_config = {
                 "Symbol": st.column_config.TextColumn("🏢 Symbol", width="small"),
+                "Exchange": st.column_config.TextColumn("🌐 Exchange", width="small"),
                 "Quantity": st.column_config.NumberColumn("📦 Qty", width="small"),
                 "Buy_Price": st.column_config.NumberColumn("💰 Buy Price", format="₹%.2f", width="small"),
                 "Current_Price": st.column_config.NumberColumn("💎 Current Price", format="₹%.2f", width="small"),
@@ -903,12 +913,12 @@ def analyze_portfolio(portfolio_analyzer):
                 "Reason": st.column_config.TextColumn("💡 Analysis", width="large")
             }
             display_data = table_sorted.copy()
-            display_data['Invested_Amount'] = display_data['Invested_Amount'].apply(format_indian_currency)
-            display_data['Current_Value'] = display_data['Current_Value'].apply(format_indian_currency)
-            display_data['PnL'] = display_data['PnL'].apply(format_indian_currency)
+            display_data['Invested_Amount'] = table_data['Invested_Amount'].apply(format_indian_currency)
+            display_data['Current_Value'] = table_data['Current_Value'].apply(format_indian_currency)
+            display_data['PnL'] = table_data['PnL'].apply(format_indian_currency)
             st.markdown("**💡 Click on any column header to sort the data**")
             st.data_editor(
-                display_data[['Symbol', 'Quantity', 'Buy_Price', 'Current_Price',
+                display_data[['Symbol', 'Exchange', 'Quantity', 'Buy_Price', 'Current_Price',
                               'Invested_Amount', 'Current_Value', 'PnL', 'PnL_Percentage',
                               'RSI_1Y', 'MACD_1Y', 'SMA_44', 'PE_Ratio', 'PB_Ratio',
                               'Support_Level', 'Resistance_Level', 'Recommendation', 'Reason']],
@@ -920,15 +930,13 @@ def analyze_portfolio(portfolio_analyzer):
             )
             st.markdown("---")
             st.markdown("### 🎯 AI-Powered Investment Recommendations")
-            if model_trained:
-                st.success(
-                    "🧠 **Advanced AI Analysis Active** - Using ensemble machine learning models trained on 5-year data with RSI, MACD, and moving averages")
+            if model_trained and LIGHTGBM_AVAILABLE and ai_analyzer.support_model_fitted:
+                st.success("🧠 **Advanced AI Analysis Active** - Using LightGBM with RSI, MACD, and SMA 44, with AI-predicted support/resistance levels")
             else:
-                st.info(
-                    "📊 **Technical Analysis Mode** - Using traditional indicators with 5-year and 1-year RSI, MACD, SMA, P/E, P/B, and support/resistance levels")
-            buy_stocks = [symbol for symbol in symbols if recommendations.get(symbol, {}).get('action') == 'BUY']
-            sell_stocks = [symbol for symbol in symbols if recommendations.get(symbol, {}).get('action') == 'SELL']
-            hold_stocks = [symbol for symbol in symbols if recommendations.get(symbol, {}).get('action') == 'HOLD']
+                st.info("📊 **Technical Analysis Mode** - Using traditional indicators with RSI, MACD, SMA 44, and pivot point support/resistance levels")
+            buy_stocks = [pair for pair in symbol_exchange_pairs if recommendations.get(pair['Symbol'], {}).get('action') == 'BUY']
+            sell_stocks = [pair for pair in symbol_exchange_pairs if recommendations.get(pair['Symbol'], {}).get('action') == 'SELL']
+            hold_stocks = [pair for pair in symbol_exchange_pairs if recommendations.get(pair['Symbol'], {}).get('action') == 'HOLD']
             col1, col2, col3 = st.columns(3)
             with col1:
                 st.markdown(f"""
@@ -939,8 +947,10 @@ def analyze_portfolio(portfolio_analyzer):
                 """, unsafe_allow_html=True)
                 if buy_stocks:
                     for stock in buy_stocks:
-                        reason = recommendations[stock]['reason']
-                        st.success(f"**{stock}** - {reason}")
+                        symbol = stock['Symbol']
+                        exchange = stock['Exchange']
+                        reason = recommendations[symbol]['reason']
+                        st.success(f"**{symbol} ({exchange})** - {reason}")
                 else:
                     st.info("No buy recommendations at this time")
             with col2:
@@ -952,8 +962,10 @@ def analyze_portfolio(portfolio_analyzer):
                 """, unsafe_allow_html=True)
                 if sell_stocks:
                     for stock in sell_stocks:
-                        reason = recommendations[stock]['reason']
-                        st.error(f"**{stock}** - {reason}")
+                        symbol = stock['Symbol']
+                        exchange = stock['Exchange']
+                        reason = recommendations[symbol]['reason']
+                        st.error(f"**{symbol} ({exchange})** - {reason}")
                 else:
                     st.info("No sell recommendations at this time")
             with col3:
@@ -965,14 +977,15 @@ def analyze_portfolio(portfolio_analyzer):
                 """, unsafe_allow_html=True)
                 if hold_stocks:
                     for stock in hold_stocks:
-                        reason = recommendations[stock]['reason']
-                        st.warning(f"**{stock}** - {reason}")
+                        symbol = stock['Symbol']
+                        exchange = stock['Exchange']
+                        reason = recommendations[symbol]['reason']
+                        st.warning(f"**{symbol} ({exchange})** - {reason}")
                 else:
                     st.info("No hold recommendations at this time")
         except Exception as e:
             st.error(f"❌ Error processing portfolio: {str(e)}")
             st.info("Please check your CSV format and try again.")
-
 
 if __name__ == "__main__":
     main()

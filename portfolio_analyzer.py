@@ -105,64 +105,50 @@ class PortfolioAnalyzer:
             return False, f"Data type conversion error: {str(e)}"
         
         return True, df
-    
-    def get_current_prices(self, symbols):
-        """Fetch current prices for all symbols in portfolio"""
-        current_prices = {}
-        
+
+    def get_current_prices(self, symbols, exchange):
+        """Get current market prices for symbols"""
+        prices = {}
         for symbol in symbols:
             try:
-                valid_symbol = self.validate_symbol(symbol)
-                if valid_symbol:
-                    print(f"Using validated symbol: {valid_symbol}")
-
-                    stock_info = self.data_fetcher.get_stock_info(symbol, "NSE")
-                    current_price = stock_info.get('currentPrice', 0)
-                
-                    # If current price not available, try getting from recent data
-                    if current_price == 0:
-                        recent_data = self.data_fetcher.get_stock_data(symbol, "NSE", "1d")
-                        if recent_data is not None and not recent_data.empty:
-                            current_price = recent_data['Close'].iloc[-1]
-
-                    current_prices[symbol] = current_price
-
-                else:
-                    print("Invalid symbol")
-
+                # Use get_stock_info to fetch current price
+                info = self.data_fetcher.get_stock_info(symbol, exchange)
+                prices[symbol] = info.get('currentPrice', np.nan)
             except Exception as e:
-                st.warning(f"Could not fetch price for {symbol}: {str(e)}")
-                current_prices[symbol] = 0
-        
-        return current_prices
-    
+                print(f"Error fetching price for {symbol}: {str(e)}")
+                prices[symbol] = np.nan
+        return prices
+
     def calculate_portfolio_metrics(self, df, current_prices):
         """Calculate portfolio metrics including P&L, CAGR"""
         portfolio_data = []
-        
+
         for _, row in df.iterrows():
             symbol = row['Symbol']
             quantity = row['Quantity']
             buy_price = row['Buy_Price']
             buy_date = row['Buy_Date']
-            
+
+            # Get current price - handle missing values
             current_price = current_prices.get(symbol, 0)
-            
+            if pd.isna(current_price) or current_price <= 0:
+                current_price = 0
+
             # Calculate metrics
             invested_amount = quantity * buy_price
             current_value = quantity * current_price
             pnl = current_value - invested_amount
             pnl_percentage = (pnl / invested_amount) * 100 if invested_amount > 0 else 0
-            
+
             # Calculate holding period in years
             holding_period_days = (datetime.now() - buy_date).days
-            holding_period_years = holding_period_days / 365.25
-            
+            holding_period_years = max(holding_period_days / 365.25, 0.001)  # Avoid division by zero
+
             # Calculate CAGR
             cagr = 0
-            if holding_period_years > 0 and buy_price > 0:
+            if buy_price > 0 and current_price > 0:
                 cagr = ((current_price / buy_price) ** (1 / holding_period_years) - 1) * 100
-            
+
             portfolio_data.append({
                 'Symbol': symbol,
                 'Quantity': quantity,
@@ -176,83 +162,66 @@ class PortfolioAnalyzer:
                 'Holding_Period_Days': holding_period_days,
                 'CAGR': cagr
             })
-        
+
         return pd.DataFrame(portfolio_data)
-    
+
     def calculate_xirr(self, cash_flows, dates):
-        """
-        Calculate XIRR (Extended Internal Rate of Return)
-        cash_flows: list of cash flows (negative for investments, positive for current value)
-        dates: list of corresponding dates
-        """
+        """Robust XIRR calculation with error handling"""
         try:
-            if len(cash_flows) != len(dates) or len(cash_flows) < 2:
+            # Filter out zero cash flows
+            valid_indices = [i for i, cf in enumerate(cash_flows) if cf != 0]
+            if len(valid_indices) < 2:
                 return 0
-            
-            # Remove any zero cash flows and corresponding dates
-            filtered_cash_flows = []
-            filtered_dates = []
-            for cf, date in zip(cash_flows, dates):
-                if cf != 0:
-                    filtered_cash_flows.append(cf)
-                    filtered_dates.append(date)
-            
-            if len(filtered_cash_flows) < 2:
-                return 0
-            
-            # Convert dates to years from first date
-            first_date = min(filtered_dates)
-            years = [(date - first_date).days / 365.25 for date in filtered_dates]
-            
-            def npv(rate, cash_flows, years):
-                """Calculate Net Present Value"""
-                if rate <= -1:
-                    return float('inf')
+
+            filtered_cash_flows = [cash_flows[i] for i in valid_indices]
+            filtered_dates = [dates[i] for i in valid_indices]
+
+            # Convert dates to years since first date
+            min_date = min(filtered_dates)
+            years = [(d - min_date).days / 365.25 for d in filtered_dates]
+
+            # Use numpy_financial for accurate XIRR calculation
+            try:
+                import numpy_financial as npf
+                return npf.irr(filtered_cash_flows) * 100
+            except ImportError:
+                # Fallback to iterative method
+                return self._xirr_fallback(filtered_cash_flows, years)
+        except Exception:
+            return 0
+
+    def _xirr_fallback(self, cash_flows, years):
+        """Fallback XIRR calculation method"""
+        try:
+            # Initialize bounds
+            low, high = -0.99, 5.0  # -99% to 500%
+            tolerance = 1e-6
+
+            # Define NPV function
+            def npv(rate):
                 return sum(cf / ((1 + rate) ** year) for cf, year in zip(cash_flows, years))
-            
-            def npv_derivative(rate, cash_flows, years):
-                """Calculate derivative of NPV for Newton-Raphson method"""
-                if rate <= -1:
-                    return float('inf')
-                return sum(-cf * year / ((1 + rate) ** (year + 1)) for cf, year in zip(cash_flows, years))
-            
-            # Use Newton-Raphson method for better accuracy
-            guess = 0.1  # 10% initial guess
-            
-            for _ in range(100):  # Maximum iterations
-                npv_val = npv(guess, filtered_cash_flows, years)
-                npv_deriv = npv_derivative(guess, filtered_cash_flows, years)
-                
-                if abs(npv_val) < 1e-6:  # Convergence achieved
-                    return guess * 100
-                
-                if npv_deriv == 0:  # Avoid division by zero
-                    break
-                
-                new_guess = guess - npv_val / npv_deriv
-                
-                # Ensure the guess stays within reasonable bounds
-                if new_guess <= -1 or new_guess > 5:  # Cap at 500% return
-                    # Fall back to bisection method
-                    low, high = -0.99, 5.0
-                    for _ in range(50):
-                        mid = (low + high) / 2
-                        npv_mid = npv(mid, filtered_cash_flows, years)
-                        if abs(npv_mid) < 1e-6:
-                            return mid * 100
-                        elif npv_mid > 0:
-                            low = mid
-                        else:
-                            high = mid
+
+            # Use bisection method
+            for _ in range(100):
+                mid = (low + high) / 2
+                npv_mid = npv(mid)
+
+                if abs(npv_mid) < tolerance:
                     return mid * 100
-                
-                if abs(new_guess - guess) < 1e-6:  # Convergence achieved
-                    return new_guess * 100
-                
-                guess = new_guess
-            
-            return guess * 100
-        
+
+                npv_low = npv(low)
+                npv_high = npv(high)
+
+                # Check if solution is bracketed
+                if npv_low * npv_high > 0:
+                    return 0
+
+                if npv_mid * npv_low < 0:
+                    high = mid
+                else:
+                    low = mid
+
+            return mid * 100
         except Exception:
             return 0
     

@@ -97,6 +97,27 @@ class StockDataFetcher:
         except Exception as e:
             st.warning(f"Could not fetch detailed info for {symbol}: {str(e)}")
             return {}
+
+    def get_current_price(self, symbol, exchange="NSE"):
+        """Get current market price for a symbol"""
+        try:
+            formatted_symbol = self.format_symbol(symbol, exchange)
+            ticker = yf.Ticker(formatted_symbol)
+
+            # Get the latest data (last 1 minute of trading)
+            data = ticker.history(period="1d", interval="1m")
+            if not data.empty:
+                return data['Close'].iloc[-1]
+
+            # Fallback to daily data
+            data = ticker.history(period="1d")
+            if not data.empty:
+                return data['Close'].iloc[-1]
+
+            return 0
+        except Exception as e:
+            print(f"Error getting current price for {symbol}: {str(e)}")
+            return 0
     
     def get_intraday_data(self, symbol, exchange="NSE", interval="5m"):
         """
