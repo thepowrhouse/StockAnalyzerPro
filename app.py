@@ -1,3 +1,8 @@
+# Add to top of app.py
+import os
+if not os.path.exists('sklearn'):
+    os.system('pip install scikit-learn>=1.3.2')
+
 import urllib.error
 import warnings
 import numpy as np
